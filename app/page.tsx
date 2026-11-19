@@ -12,16 +12,29 @@ import {
   KeyRound,
   Search,
   Lock,
+  Sparkles,
 } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { collection, addDoc, serverTimestamp, doc, updateDoc, onSnapshot } from "firebase/firestore";
 
-const PACKS = [
+type GameType = "Free Fire" | "eFootball" | "Netflix";
+
+interface Pack {
+  id: string;
+  game: GameType;
+  title: string;
+  price: number;
+  badge?: string;
+}
+
+const PACKS: Pack[] = [
   { id: "ff-100", game: "Free Fire", title: "100 + 10 Diamants", price: 4.5, badge: "Populaire" },
   { id: "ff-310", game: "Free Fire", title: "310 + 31 Diamants", price: 13.0 },
   { id: "ff-520", game: "Free Fire", title: "520 + 52 Diamants", price: 21.5, badge: "Meilleur choix" },
-  { id: "ef-1040", game: "eFootball", title: "1040 Coins", price: 34.0 },
+  { id: "ef-1040", game: "eFootball", title: "1040 Coins", price: 34.0, badge: "Populaire" },
   { id: "ef-2130", game: "eFootball", title: "2130 Coins", price: 65.0 },
+  { id: "nf-1m", game: "Netflix", title: "1 Mois UHD (Profil Privé)", price: 14.0, badge: "Top vente" },
+  { id: "nf-3m", game: "Netflix", title: "3 Mois UHD (Profil Privé)", price: 39.0 },
 ];
 
 interface TrackedOrder {
@@ -57,19 +70,15 @@ const compressImage = (file: File): Promise<string> => {
 };
 
 export default function GenShopOrderPage() {
-  const [selectedGame, setSelectedGame] = useState<"Free Fire" | "eFootball">("Free Fire");
-  const [selectedPack, setSelectedPack] = useState(PACKS[0]);
+  const [selectedGame, setSelectedGame] = useState<GameType>("Free Fire");
+  const [selectedPack, setSelectedPack] = useState<Pack>(PACKS[0]);
 
-  // Champs Free Fire
   const [playerId, setPlayerId] = useState("");
-
-  // Champs eFootball (Login + Code de vérification)
   const [accountEmail, setAccountEmail] = useState("");
   const [accountPassword, setAccountPassword] = useState("");
   const [otpInput, setOtpInput] = useState("");
   const [sendingOtp, setSendingOtp] = useState(false);
 
-  // Champs communs
   const [whatsapp, setWhatsapp] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"D17" | "Flouci" | "Recharge">("D17");
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
@@ -78,13 +87,11 @@ export default function GenShopOrderPage() {
   const [orderNumber, setOrderNumber] = useState<string | null>(null);
   const [liveOrder, setLiveOrder] = useState<TrackedOrder | null>(null);
 
-  // Suivi manuel par code GEN-XXXX
   const [trackCodeInput, setTrackCodeInput] = useState("");
   const [trackedDocId, setTrackedDocId] = useState<string | null>(null);
 
   const filteredPacks = PACKS.filter((p) => p.game === selectedGame);
 
-  // Écoute en temps réel la commande courante (après création ou recherche)
   const activeDocId = submittedDocId || trackedDocId;
   useEffect(() => {
     if (!activeDocId) return;
@@ -122,8 +129,12 @@ export default function GenShopOrderPage() {
       alert("Veuillez saisir votre ID Joueur Free Fire.");
       return;
     }
-    if (selectedGame === "eFootball" && (!accountEmail.trim() || !accountPassword.trim())) {
-      alert("Veuillez saisir l'identifiant/e-mail et le mot de passe du compte eFootball.");
+    if ((selectedGame === "eFootball" || selectedGame === "Netflix") && !accountEmail.trim()) {
+      alert("Veuillez saisir votre e-mail ou identifiant de compte.");
+      return;
+    }
+    if (selectedGame === "eFootball" && !accountPassword.trim()) {
+      alert("Veuillez saisir le mot de passe du compte eFootball.");
       return;
     }
 
@@ -138,7 +149,7 @@ export default function GenShopOrderPage() {
         packTitle: selectedPack.title,
         priceTND: selectedPack.price,
         playerId: selectedGame === "Free Fire" ? playerId.trim() : "",
-        accountEmail: selectedGame === "eFootball" ? accountEmail.trim() : "",
+        accountEmail: selectedGame !== "Free Fire" ? accountEmail.trim() : "",
         accountPassword: selectedGame === "eFootball" ? accountPassword : "",
         verificationCode: "",
         whatsapp: whatsapp.trim(),
@@ -176,107 +187,121 @@ export default function GenShopOrderPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#090D16] text-white font-sans">
-      <header className="border-b border-slate-800 bg-[#0D1322]/90 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-lg bg-gradient-to-tr from-blue-600 to-cyan-400 flex items-center justify-center font-black text-lg">
-              G
+    <div className="min-h-screen bg-[#060B17] text-slate-100 font-sans selection:bg-amber-400 selection:text-slate-950">
+      {/* Header Premium Bleu Nuit & Or */}
+      <header className="border-b border-amber-500/20 bg-[#0A1224]/95 backdrop-blur-md sticky top-0 z-50">
+        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <img
+              src="/logo.jpg"
+              alt="GEN SHOP Logo"
+              className="w-11 h-11 rounded-full object-cover border-2 border-amber-400 shadow-md shadow-amber-500/20"
+            />
+            <div>
+              <span className="text-xl font-extrabold tracking-wide text-amber-300 block leading-none">
+                GEN SHOP
+              </span>
+              <span className="text-[11px] uppercase tracking-widest text-slate-400">
+                Gaming &amp; Streaming TN
+              </span>
             </div>
-            <span className="text-xl font-extrabold tracking-tight">
-              GenShop <span className="text-cyan-400">TN</span>
-            </span>
           </div>
-          <span className="flex items-center gap-1 text-xs sm:text-sm text-emerald-400">
-            <Zap className="w-4 h-4" /> Livraison rapide
+
+          <span className="flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-amber-300 bg-amber-500/10 border border-amber-400/30 px-3 py-1.5 rounded-full">
+            <Zap className="w-4 h-4 text-amber-400" /> D17 &amp; Flouci Sécurisé
           </span>
         </div>
       </header>
 
       <main className="max-w-4xl mx-auto px-4 py-8">
-        <div className="bg-gradient-to-r from-blue-900/40 via-[#131B2E] to-cyan-900/30 border border-blue-500/20 rounded-2xl p-6 mb-6">
-          <h1 className="text-2xl sm:text-3xl font-bold mb-2">
-            La nouvelle génération de recharge gaming en Tunisie
+        {/* Bannière Hero */}
+        <div className="bg-gradient-to-br from-[#0E1A36] via-[#0B1326] to-[#171625] border border-amber-400/25 rounded-2xl p-6 sm:p-8 mb-6 shadow-xl shadow-black/40">
+          <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-300 bg-amber-400/10 border border-amber-400/30 px-3 py-1 rounded-full mb-3">
+            <Sparkles className="w-3.5 h-3.5" /> Recharge Rapide &amp; Fiable
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white mb-2">
+            Free Fire, eFootball &amp; Netflix en Tunisie
           </h1>
-          <p className="text-slate-400 text-sm sm:text-base">
-            Diamants Free Fire par ID et Coins eFootball avec confirmation de code de vérification en direct.
+          <p className="text-slate-300 text-sm sm:text-base max-w-2xl">
+            Commandez vos diamants, coins et abonnements en quelques minutes avec paiement simple via D17, Flouci ou recharge.
           </p>
         </div>
 
-        {/* Barre rapide pour retrouver une commande eFootball & envoyer son code OTP */}
-        <form onSubmit={handleTrackSearch} className="bg-[#131B2E] border border-slate-800 rounded-2xl p-4 mb-8 flex flex-col sm:flex-row gap-3">
-          <div className="flex-1 flex items-center gap-2 bg-[#090D16] border border-slate-700 rounded-xl px-3">
-            <Search className="w-4 h-4 text-slate-400" />
+        {/* Suivi commande / Code OTP */}
+        <form
+          onSubmit={handleTrackSearch}
+          className="bg-[#0D162B] border border-slate-800 hover:border-amber-500/30 transition rounded-2xl p-4 mb-8 flex flex-col sm:flex-row gap-3"
+        >
+          <div className="flex-1 flex items-center gap-2 bg-[#060B17] border border-slate-700/80 rounded-xl px-3.5">
+            <Search className="w-4 h-4 text-amber-400" />
             <input
               type="text"
-              placeholder="Déjà commandé ? Entre ton code (ex: GEN-4821) pour envoyer le code de vérification"
+              placeholder="Suivre une commande ou envoyer le code eFootball (ex: GEN-4821)"
               value={trackCodeInput}
               onChange={(e) => setTrackCodeInput(e.target.value)}
-              className="w-full bg-transparent py-2.5 text-sm text-white focus:outline-none"
+              className="w-full bg-transparent py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none"
             />
           </div>
           <button
             type="submit"
-            className="bg-slate-800 hover:bg-slate-700 px-5 py-2.5 rounded-xl text-sm font-bold transition"
+            className="bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-amber-300 border border-amber-400/30 px-5 py-2.5 rounded-xl text-sm font-bold transition"
           >
             Suivre / Code OTP
           </button>
         </form>
 
-        {/* Sélecteur de Jeu */}
-        <div className="flex gap-3 mb-8">
-          {(["Free Fire", "eFootball"] as const).map((game) => (
-            <button
-              key={game}
-              type="button"
-              onClick={() => {
-                setSelectedGame(game);
-                const firstPack = PACKS.find((p) => p.game === game);
-                if (firstPack) setSelectedPack(firstPack);
-              }}
-              className={`flex-1 py-3.5 px-4 rounded-xl font-bold text-sm sm:text-base transition border ${
-                selectedGame === game
-                  ? "bg-blue-600 border-cyan-400 text-white shadow-lg shadow-blue-600/20"
-                  : "bg-[#131B2E] border-slate-800 text-slate-400 hover:border-slate-700"
-              }`}
-            >
-              {game}
-            </button>
-          ))}
+        {/* Sélecteur de Catégorie */}
+        <div className="grid grid-cols-3 gap-3 mb-8">
+          {(["Free Fire", "eFootball", "Netflix"] as const).map((game) => {
+            const active = selectedGame === game;
+            return (
+              <button
+                key={game}
+                type="button"
+                onClick={() => {
+                  setSelectedGame(game);
+                  const firstPack = PACKS.find((p) => p.game === game);
+                  if (firstPack) setSelectedPack(firstPack);
+                }}
+                className={`py-3.5 px-3 rounded-xl font-extrabold text-xs sm:text-base transition border ${
+                  active
+                    ? "bg-gradient-to-r from-amber-500 to-yellow-400 border-amber-300 text-slate-950 shadow-lg shadow-amber-500/20"
+                    : "bg-[#0D162B] border-slate-800 text-slate-300 hover:border-amber-500/40"
+                }`}
+              >
+                {game}
+              </button>
+            );
+          })}
         </div>
 
         {liveOrder && orderNumber ? (
-          <div className="bg-[#131B2E] border border-cyan-500/30 rounded-2xl p-6 sm:p-8 space-y-6">
+          <div className="bg-[#0D162B] border border-amber-400/35 rounded-2xl p-6 sm:p-8 space-y-6">
             <div className="text-center">
               <CheckCircle2 className="w-14 h-14 text-emerald-400 mx-auto mb-3" />
-              <h2 className="text-2xl font-bold mb-1">Commande {orderNumber}</h2>
+              <h2 className="text-2xl font-bold text-white mb-1">Commande {orderNumber}</h2>
               <p className="text-slate-400 text-sm">
-                {liveOrder.game} • <strong className="text-white">{liveOrder.packTitle}</strong> • Statut :{" "}
-                <span className="text-cyan-400 font-bold">{liveOrder.status}</span>
+                {liveOrder.game} • <strong className="text-amber-300">{liveOrder.packTitle}</strong> • Statut :{" "}
+                <span className="text-amber-400 font-bold">{liveOrder.status}</span>
               </p>
             </div>
 
-            {/* Bloc spécial eFootball : saisie du code de vérification demandé après login */}
             {liveOrder.game === "eFootball" && liveOrder.status !== "livree" && liveOrder.status !== "rejetee" && (
-              <div className="bg-[#090D16] border border-amber-500/40 rounded-xl p-5">
-                <div className="flex items-center gap-2 text-amber-400 font-bold mb-2">
+              <div className="bg-[#060B17] border border-amber-400/40 rounded-xl p-5">
+                <div className="flex items-center gap-2 text-amber-300 font-bold mb-2">
                   <KeyRound className="w-5 h-5" />
                   <span>Code de vérification eFootball</span>
                 </div>
 
-                {liveOrder.status === "attente_code_client" ? (
-                  <p className="text-sm text-slate-300 mb-4">
-                    La connexion est lancée sur ton compte. Entre ici le <strong>code de vérification</strong> reçu par e-mail/application :
-                  </p>
-                ) : (
-                  <p className="text-sm text-slate-400 mb-4">
-                    Dès que l&apos;administrateur lance la connexion sur ton compte, tu pourras envoyer ici le code de vérification (ou le soumettre dès réception).
-                  </p>
-                )}
+                <p className="text-sm text-slate-300 mb-4">
+                  {liveOrder.status === "attente_code_client"
+                    ? "La connexion est lancée sur ton compte. Saisis ici le code de vérification reçu :"
+                    : "Dès que la connexion est lancée sur ton compte, envoie ici ton code de vérification :"}
+                </p>
 
                 {liveOrder.verificationCode ? (
                   <div className="bg-emerald-500/15 border border-emerald-500/40 rounded-lg p-3 text-sm text-emerald-300">
-                    Code transmis : <strong className="font-mono text-base">{liveOrder.verificationCode}</strong> (traitement en cours).
+                    Code transmis : <strong className="font-mono text-base">{liveOrder.verificationCode}</strong> (en cours de traitement).
                   </div>
                 ) : (
                   <form onSubmit={handleSendOtp} className="flex flex-col sm:flex-row gap-3">
@@ -286,12 +311,12 @@ export default function GenShopOrderPage() {
                       placeholder="Ex: 123456"
                       value={otpInput}
                       onChange={(e) => setOtpInput(e.target.value)}
-                      className="flex-1 bg-[#131B2E] border border-slate-700 rounded-xl px-4 py-3 font-mono text-white focus:outline-none focus:border-amber-400"
+                      className="flex-1 bg-[#0D162B] border border-slate-700 rounded-xl px-4 py-3 font-mono text-white focus:outline-none focus:border-amber-400"
                     />
                     <button
                       type="submit"
                       disabled={sendingOtp}
-                      className="bg-amber-500 hover:bg-amber-400 text-black font-extrabold px-6 py-3 rounded-xl transition"
+                      className="bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-slate-950 font-extrabold px-6 py-3 rounded-xl transition"
                     >
                       {sendingOtp ? "Envoi..." : "Envoyer le code"}
                     </button>
@@ -309,7 +334,7 @@ export default function GenShopOrderPage() {
                   setLiveOrder(null);
                   setReceiptFile(null);
                 }}
-                className="bg-blue-600 hover:bg-blue-500 px-6 py-2.5 rounded-xl font-semibold transition"
+                className="bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 hover:from-amber-400 hover:to-yellow-300 px-6 py-2.5 rounded-xl font-extrabold transition"
               >
                 Nouvelle commande
               </button>
@@ -317,16 +342,16 @@ export default function GenShopOrderPage() {
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Étape 1 : Infos selon le jeu */}
-            <section className="bg-[#131B2E] border border-slate-800 rounded-2xl p-6">
+            {/* Étape 1 */}
+            <section className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6">
               <div className="flex items-center gap-3 mb-4">
-                <span className="w-7 h-7 rounded-full bg-blue-600 text-sm font-bold flex items-center justify-center">
+                <span className="w-7 h-7 rounded-full bg-amber-400 text-slate-950 text-sm font-black flex items-center justify-center">
                   1
                 </span>
-                <h2 className="text-lg font-bold">Informations du compte ({selectedGame})</h2>
+                <h2 className="text-lg font-bold text-white">Informations du compte ({selectedGame})</h2>
               </div>
 
-              {selectedGame === "Free Fire" ? (
+              {selectedGame === "Free Fire" && (
                 <div className="grid sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm text-slate-400 mb-1.5">ID Joueur (Player ID)</label>
@@ -336,7 +361,7 @@ export default function GenShopOrderPage() {
                       placeholder="Ex: 123456789"
                       value={playerId}
                       onChange={(e) => setPlayerId(e.target.value)}
-                      className="w-full bg-[#090D16] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-400"
+                      className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400"
                     />
                   </div>
                   <div>
@@ -347,94 +372,123 @@ export default function GenShopOrderPage() {
                       placeholder="Ex: 22 123 456"
                       value={whatsapp}
                       onChange={(e) => setWhatsapp(e.target.value)}
-                      className="w-full bg-[#090D16] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-400"
+                      className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400"
                     />
                   </div>
                 </div>
-              ) : (
+              )}
+
+              {selectedGame === "eFootball" && (
                 <div className="space-y-4">
                   <div className="grid sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm text-slate-400 mb-1.5">E-mail / ID de connexion eFootball</label>
+                      <label className="block text-sm text-slate-400 mb-1.5">E-mail / ID eFootball</label>
                       <input
                         type="text"
                         required
                         placeholder="Ex: joueur@email.com"
                         value={accountEmail}
                         onChange={(e) => setAccountEmail(e.target.value)}
-                        className="w-full bg-[#090D16] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-400"
+                        className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400"
                       />
                     </div>
                     <div>
                       <label className="block text-sm text-slate-400 mb-1.5 flex items-center gap-1">
-                        <Lock className="w-3.5 h-3.5 text-cyan-400" /> Mot de passe du compte
+                        <Lock className="w-3.5 h-3.5 text-amber-400" /> Mot de passe
                       </label>
                       <input
                         type="password"
                         required
-                        placeholder="Mot de passe de connexion"
+                        placeholder="Mot de passe du compte"
                         value={accountPassword}
                         onChange={(e) => setAccountPassword(e.target.value)}
-                        className="w-full bg-[#090D16] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-400"
+                        className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400"
                       />
                     </div>
                   </div>
                   <div>
-                    <label className="block text-sm text-slate-400 mb-1.5">Numéro WhatsApp (pour alerte code de vérification)</label>
+                    <label className="block text-sm text-slate-400 mb-1.5">Numéro WhatsApp</label>
                     <input
                       type="tel"
                       required
                       placeholder="Ex: 22 123 456"
                       value={whatsapp}
                       onChange={(e) => setWhatsapp(e.target.value)}
-                      className="w-full bg-[#090D16] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-400"
+                      className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400"
                     />
                   </div>
-                  <p className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3">
-                    Après validation, le code de vérification te sera demandé dès le lancement de la connexion.
-                  </p>
+                </div>
+              )}
+
+              {selectedGame === "Netflix" && (
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm text-slate-400 mb-1.5">E-mail ou Pseudo souhaité</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: client@email.com"
+                      value={accountEmail}
+                      onChange={(e) => setAccountEmail(e.target.value)}
+                      className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-slate-400 mb-1.5">Numéro WhatsApp (envoi accès)</label>
+                    <input
+                      type="tel"
+                      required
+                      placeholder="Ex: 22 123 456"
+                      value={whatsapp}
+                      onChange={(e) => setWhatsapp(e.target.value)}
+                      className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
                 </div>
               )}
             </section>
 
-            {/* Étape 2 : Choix du Pack */}
-            <section className="bg-[#131B2E] border border-slate-800 rounded-2xl p-6">
+            {/* Étape 2 */}
+            <section className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6">
               <div className="flex items-center gap-3 mb-4">
-                <span className="w-7 h-7 rounded-full bg-blue-600 text-sm font-bold flex items-center justify-center">
+                <span className="w-7 h-7 rounded-full bg-amber-400 text-slate-950 text-sm font-black flex items-center justify-center">
                   2
                 </span>
-                <h2 className="text-lg font-bold">Choisir le montant</h2>
+                <h2 className="text-lg font-bold text-white">Choisir l&apos;offre</h2>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {filteredPacks.map((pack) => (
-                  <div
-                    key={pack.id}
-                    onClick={() => setSelectedPack(pack)}
-                    className={`cursor-pointer rounded-xl p-4 border transition relative ${
-                      selectedPack.id === pack.id
-                        ? "bg-blue-600/15 border-cyan-400"
-                        : "bg-[#090D16] border-slate-800 hover:border-slate-700"
-                    }`}
-                  >
-                    {pack.badge && (
-                      <span className="absolute -top-2.5 right-3 bg-amber-500 text-black text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase">
-                        {pack.badge}
-                      </span>
-                    )}
-                    <div className="font-bold text-base mb-1">{pack.title}</div>
-                    <div className="text-cyan-400 font-extrabold text-lg">{pack.price.toFixed(2)} TND</div>
-                  </div>
-                ))}
+                {filteredPacks.map((pack) => {
+                  const isSelected = selectedPack.id === pack.id;
+                  return (
+                    <div
+                      key={pack.id}
+                      onClick={() => setSelectedPack(pack)}
+                      className={`cursor-pointer rounded-xl p-4 border transition relative ${
+                        isSelected
+                          ? "bg-amber-400/15 border-amber-400 shadow-md shadow-amber-500/10"
+                          : "bg-[#060B17] border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      {pack.badge && (
+                        <span className="absolute -top-2.5 right-3 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
+                          {pack.badge}
+                        </span>
+                      )}
+                      <div className="font-bold text-base text-white mb-1">{pack.title}</div>
+                      <div className="text-amber-300 font-extrabold text-lg">{pack.price.toFixed(2)} TND</div>
+                    </div>
+                  );
+                })}
               </div>
             </section>
 
-            {/* Étape 3 : Paiement */}
-            <section className="bg-[#131B2E] border border-slate-800 rounded-2xl p-6">
+            {/* Étape 3 */}
+            <section className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6">
               <div className="flex items-center gap-3 mb-4">
-                <span className="w-7 h-7 rounded-full bg-blue-600 text-sm font-bold flex items-center justify-center">
+                <span className="w-7 h-7 rounded-full bg-amber-400 text-slate-950 text-sm font-black flex items-center justify-center">
                   3
                 </span>
-                <h2 className="text-lg font-bold">Méthode de paiement & Preuve</h2>
+                <h2 className="text-lg font-bold text-white">Paiement &amp; Capture du reçu</h2>
               </div>
 
               <div className="grid grid-cols-3 gap-3 mb-5">
@@ -445,8 +499,8 @@ export default function GenShopOrderPage() {
                     onClick={() => setPaymentMethod(method)}
                     className={`py-3 px-3 rounded-xl border text-sm font-bold flex items-center justify-center gap-2 transition ${
                       paymentMethod === method
-                        ? "bg-cyan-500/15 border-cyan-400 text-cyan-300"
-                        : "bg-[#090D16] border-slate-800 text-slate-400"
+                        ? "bg-amber-400/15 border-amber-400 text-amber-300"
+                        : "bg-[#060B17] border-slate-800 text-slate-400 hover:border-slate-700"
                     }`}
                   >
                     {method === "Recharge" ? <Smartphone className="w-4 h-4" /> : <CreditCard className="w-4 h-4" />}
@@ -455,30 +509,30 @@ export default function GenShopOrderPage() {
                 ))}
               </div>
 
-              <div className="bg-[#090D16] border border-slate-800 rounded-xl p-4 mb-5 text-sm text-slate-300">
+              <div className="bg-[#060B17] border border-amber-500/20 rounded-xl p-4 mb-5 text-sm text-slate-300">
                 {paymentMethod === "D17" && (
                   <p>
-                    Envoyez <strong className="text-cyan-400">{selectedPack.price.toFixed(2)} TND</strong> via{" "}
-                    <strong>D17</strong> au numéro : <strong className="text-white">XX XXX XXX</strong> puis importez la capture ci-dessous.
+                    Envoyez <strong className="text-amber-300">{selectedPack.price.toFixed(2)} TND</strong> via{" "}
+                    <strong className="text-white">D17</strong> au numéro : <strong className="text-amber-300">XX XXX XXX</strong> puis ajoutez la capture.
                   </p>
                 )}
                 {paymentMethod === "Flouci" && (
                   <p>
-                    Transférez <strong className="text-cyan-400">{selectedPack.price.toFixed(2)} TND</strong> via{" "}
-                    <strong>Flouci</strong> au numéro : <strong className="text-white">XX XXX XXX</strong> puis importez la capture du reçu.
+                    Transférez <strong className="text-amber-300">{selectedPack.price.toFixed(2)} TND</strong> via{" "}
+                    <strong className="text-white">Flouci</strong> au numéro : <strong className="text-amber-300">XX XXX XXX</strong> puis ajoutez la capture.
                   </p>
                 )}
                 {paymentMethod === "Recharge" && (
                   <p>
                     Envoyez une photo claire du ticket de recharge (TT / Ooredoo / Orange) de{" "}
-                    <strong className="text-cyan-400">{Math.ceil(selectedPack.price)} TND</strong>.
+                    <strong className="text-amber-300">{Math.ceil(selectedPack.price)} TND</strong>.
                   </p>
                 )}
               </div>
 
-              <label className="flex flex-col items-center justify-center border-2 border-dashed border-slate-700 hover:border-cyan-400 rounded-xl p-6 cursor-pointer transition bg-[#090D16]/50">
-                <Upload className="w-8 h-8 text-cyan-400 mb-2" />
-                <span className="text-sm font-medium text-slate-300">
+              <label className="flex flex-col items-center justify-center border-2 border-dashed border-slate-700 hover:border-amber-400 rounded-xl p-6 cursor-pointer transition bg-[#060B17]/60">
+                <Upload className="w-8 h-8 text-amber-400 mb-2" />
+                <span className="text-sm font-medium text-slate-200">
                   {receiptFile ? receiptFile.name : "Cliquez pour importer la capture du reçu"}
                 </span>
                 <span className="text-xs text-slate-500 mt-1">PNG, JPG</span>
@@ -494,7 +548,7 @@ export default function GenShopOrderPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 disabled:opacity-50 text-white font-extrabold py-4 rounded-xl text-lg shadow-lg shadow-blue-600/25 transition flex items-center justify-center gap-2"
+              className="w-full bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 disabled:opacity-50 text-slate-950 font-black py-4 rounded-xl text-lg shadow-lg shadow-amber-500/20 transition flex items-center justify-center gap-2"
             >
               {loading ? (
                 <>
