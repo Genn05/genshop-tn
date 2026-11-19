@@ -16,6 +16,10 @@ import {
   Copy,
   Check,
   Clock,
+  Gift,
+  Tag,
+  Trophy,
+  AlertCircle,
 } from "lucide-react";
 import { db } from "@/lib/firebase";
 import {
@@ -27,6 +31,7 @@ import {
   onSnapshot,
   query,
   orderBy,
+  runTransaction,
 } from "firebase/firestore";
 
 export interface PackItem {
@@ -46,6 +51,26 @@ export interface PaymentSettings {
   whatsappSupport: string;
 }
 
+export interface PromoCodeItem {
+  id: string;
+  code: string;
+  discountTND: number;
+  discountPercent: number;
+  active?: boolean;
+  game?: string;
+  singleUse?: boolean;
+  used?: boolean;
+  usedBy?: string;
+  allowedUser?: string;
+}
+
+export interface GiveawaySettings {
+  enabled: boolean;
+  title: string;
+  subtitle: string;
+  prizes: string[];
+}
+
 interface TrackedOrder {
   id: string;
   orderNumber: string;
@@ -56,6 +81,11 @@ interface TrackedOrder {
   whatsapp: string;
   status: string;
   verificationCode?: string;
+}
+
+interface OrderStatsSummary {
+  packTitle: string;
+  priceTND: number;
 }
 
 const FALLBACK_PACKS: PackItem[] = [
@@ -75,6 +105,21 @@ const DEFAULT_SETTINGS: PaymentSettings = {
   deliveryTime: "Livraison 5-15 min",
   whatsappSupport: "",
 };
+
+const DEFAULT_GIVEAWAY: GiveawaySettings = {
+  enabled: true,
+  title: "Cadeau Gratuit GEN SHOP",
+  subtitle: "Tente ta chance et débloque une récompense ou un avantage exclusif !",
+  prizes: [
+    "Code Promo -2 TND (GEN2)",
+    "Bonus Diamants / Coins offert",
+    "Livraison Ultra-Prioritaire",
+    "Réduction -10% sur prochain pack",
+  ],
+};
+
+const normalizeDigits = (val: string) => val.replace(/\D/g, "");
+const isValidFreeFireId = (val: string) => /^\d{10}$/.test(normalizeDigits(val));
 
 const compressImage = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -104,6 +149,9 @@ export default function GenShopOrderPage() {
   const [packsLoaded, setPacksLoaded] = useState(false);
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(DEFAULT_SETTINGS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [promos, setPromos] = useState<PromoCodeItem[]>([]);
+  const [giveawaySettings, setGiveawaySettings] = useState<GiveawaySettings>(DEFAULT_GIVEAWAY);
+  const [ordersHistory, setOrdersHistory] = useState<OrderStatsSummary[]>([]);
 
   const [selectedGame, setSelectedGame] = useState<string>("Free Fire");
   const [selectedPack, setSelectedPack] = useState<PackItem | null>(null);
@@ -118,14 +166,42 @@ export default function GenShopOrderPage() {
   const [paymentMethod, setPaymentMethod] = useState<"D17" | "Flouci" | "Recharge">("D17");
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const [lastSubmitTime, setLastSubmitTime] = useState<number>(0);
 
+  // Code promo
+  const [promoInput, setPromoInput] = useState("");
+  const [appliedPromo, setAppliedPromo] = useState<PromoCodeItem | null>(null);
+  const [promoError, setPromoError] = useState<string | null>(null);
+
+  // Gain gratuit
+  const [wonPrize, setWonPrize] = useState<string | null>(null);
+  const [spinningPrize, setSpinningPrize] = useState(false);
+  const [playerClaimName, setPlayerClaimName] = useState("");
+
+  // Suivi commande
   const [submittedDocId, setSubmittedDocId] = useState<string | null>(null);
   const [trackedDocId, setTrackedDocId] = useState<string | null>(null);
   const [liveOrder, setLiveOrder] = useState<TrackedOrder | null>(null);
-
   const [trackQuery, setTrackQuery] = useState("");
   const [allOrdersSnap, setAllOrdersSnap] = useState<TrackedOrder[]>([]);
   const [copiedPhone, setCopiedPhone] = useState(false);
+
+  const cleanFreeFireId = normalizeDigits(playerId);
+  const freeFireIdValid = isValidFreeFireId(playerId);
+
+  useEffect(() => {
+    const savedPrize = localStorage.getItem("genshop_won_prize");
+    if (savedPrize) setWonPrize(savedPrize);
+
+    const savedWa = localStorage.getItem("genshop_last_wa");
+    if (savedWa) setWhatsapp(savedWa);
+
+    const savedFfId = localStorage.getItem("genshop_last_ff_id");
+    if (savedFfId) setPlayerId(savedFfId);
+
+    const savedEmail = localStorage.getItem("genshop_last_email");
+    if (savedEmail) setAccountEmail(savedEmail);
+  }, []);
 
   useEffect(() => {
     const q = query(collection(db, "packs"), orderBy("price", "asc"));
@@ -157,13 +233,58 @@ export default function GenShopOrderPage() {
   }, []);
 
   useEffect(() => {
+    const unsub = onSnapshot(collection(db, "promos"), (snapshot) => {
+      const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as PromoCodeItem));
+      setPromos(list);
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "settings", "giveaway"), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() as Partial<GiveawaySettings>;
+        setGiveawaySettings({
+          enabled: data.enabled !== false,
+          title: data.title || DEFAULT_GIVEAWAY.title,
+          subtitle: data.subtitle || DEFAULT_GIVEAWAY.subtitle,
+          prizes:
+            Array.isArray(data.prizes) && data.prizes.length > 0
+              ? data.prizes
+              : DEFAULT_GIVEAWAY.prizes,
+        });
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
     const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
     const unsub = onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as TrackedOrder));
       setAllOrdersSnap(list);
+      setOrdersHistory(list.map((o) => ({ packTitle: o.packTitle, priceTND: Number(o.priceTND) || 0 })));
     });
     return () => unsub();
   }, []);
+
+  const topPurchasedPackTitle = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const item of ordersHistory) {
+      if (item.packTitle) {
+        counts[item.packTitle] = (counts[item.packTitle] || 0) + 1;
+      }
+    }
+    let bestTitle = "";
+    let maxCount = 0;
+    for (const [title, count] of Object.entries(counts)) {
+      if (count > maxCount) {
+        maxCount = count;
+        bestTitle = title;
+      }
+    }
+    return maxCount >= 2 ? bestTitle : "";
+  }, [ordersHistory]);
 
   const availablePacks = useMemo(() => {
     if (packsLoaded && packs.length > 0) return packs;
@@ -201,6 +322,95 @@ export default function GenShopOrderPage() {
     return () => unsub();
   }, [activeDocId]);
 
+  const basePrice = selectedPack ? Number(selectedPack.price) : 0;
+
+  const isUserEligibleForPromo = (promo: PromoCodeItem): boolean => {
+    const restrictedTo = (promo.allowedUser || "").trim().toLowerCase();
+    if (!restrictedTo) return true;
+
+    const candidates = [
+      whatsapp.trim().toLowerCase(),
+      normalizeDigits(whatsapp),
+      cleanFreeFireId,
+      accountEmail.trim().toLowerCase(),
+    ].filter(Boolean);
+
+    const restrictedDigits = normalizeDigits(restrictedTo);
+    return candidates.some(
+      (c) =>
+        c === restrictedTo ||
+        (restrictedDigits.length >= 6 && c === restrictedDigits)
+    );
+  };
+
+  const validatePromo = (promo: PromoCodeItem): string | null => {
+    if (promo.active === false) return "Ce code promo est désactivé.";
+    if (promo.singleUse && promo.used) return "Ce code promo à usage unique a déjà été utilisé.";
+    if (promo.game && promo.game !== "ALL" && promo.game !== selectedGame) {
+      return `Ce code est réservé à la catégorie ${promo.game}.`;
+    }
+    if (!isUserEligibleForPromo(promo)) {
+      return "Ce code promo est réservé à un utilisateur spécifique (vérifiez votre WhatsApp / ID / e-mail).";
+    }
+    return null;
+  };
+
+  const computeDiscount = (promo: PromoCodeItem, price: number): number => {
+    if (price <= 0) return 0;
+    const byPercent = (price * (Number(promo.discountPercent) || 0)) / 100;
+    const byFixed = Number(promo.discountTND) || 0;
+    return Math.min(price, Math.max(0, Math.max(byPercent, byFixed)));
+  };
+
+  const discountAmount = useMemo(() => {
+    if (!appliedPromo || basePrice <= 0) return 0;
+    if (validatePromo(appliedPromo) !== null) return 0;
+    return computeDiscount(appliedPromo, basePrice);
+  }, [appliedPromo, basePrice, selectedGame, whatsapp, cleanFreeFireId, accountEmail]);
+
+  const finalPrice = Math.max(0, basePrice - discountAmount);
+
+  const handleApplyPromo = () => {
+    setPromoError(null);
+    const clean = promoInput.trim().toUpperCase();
+    if (!clean) return;
+    const match = promos.find((p) => p.code.toUpperCase() === clean);
+    if (!match) {
+      setPromoError("Code promo introuvable.");
+      return;
+    }
+    const reason = validatePromo(match);
+    if (reason) {
+      setPromoError(reason);
+      setAppliedPromo(null);
+      return;
+    }
+    setAppliedPromo(match);
+  };
+
+  const handleClaimFreeReward = async () => {
+    if (wonPrize || spinningPrize) return;
+    setSpinningPrize(true);
+    const pool = giveawaySettings.prizes.length > 0 ? giveawaySettings.prizes : DEFAULT_GIVEAWAY.prizes;
+
+    setTimeout(async () => {
+      const chosen = pool[Math.floor(Math.random() * pool.length)];
+      setWonPrize(chosen);
+      localStorage.setItem("genshop_won_prize", chosen);
+      setSpinningPrize(false);
+
+      try {
+        await addDoc(collection(db, "reward_claims"), {
+          prize: chosen,
+          contact: playerClaimName.trim() || "Anonyme",
+          createdAt: serverTimestamp(),
+        });
+      } catch {
+        // Ignorer si erreur réseau mineure
+      }
+    }, 900);
+  };
+
   const handleTrackSearch = (e: React.FormEvent) => {
     e.preventDefault();
     const clean = trackQuery.trim().toLowerCase().replace(/\s+/g, "");
@@ -228,16 +438,26 @@ export default function GenShopOrderPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (Date.now() - lastSubmitTime < 15000) {
+      alert("Veuillez patienter quelques secondes avant d'envoyer une nouvelle commande.");
+      return;
+    }
+
     if (!selectedPack) {
       alert("Veuillez sélectionner un pack.");
       return;
     }
-    if (!whatsapp || !receiptFile) {
-      alert("Veuillez renseigner votre numéro WhatsApp et ajouter la capture du reçu.");
+    if (normalizeDigits(whatsapp).length < 8 || !receiptFile) {
+      alert("Veuillez renseigner un numéro WhatsApp valide (8 chiffres min.) et ajouter la capture du reçu.");
       return;
     }
-    if (selectedGame === "Free Fire" && !playerId.trim()) {
-      alert("Veuillez saisir votre ID Joueur Free Fire.");
+    if (!["image/jpeg", "image/png", "image/webp"].includes(receiptFile.type)) {
+      alert("Format d'image accepté : JPG, PNG ou WEBP.");
+      return;
+    }
+    if (selectedGame === "Free Fire" && !freeFireIdValid) {
+      alert("L'ID Joueur Free Fire doit contenir exactement 10 chiffres.");
       return;
     }
     if (selectedGame !== "Free Fire" && !accountEmail.trim()) {
@@ -249,31 +469,97 @@ export default function GenShopOrderPage() {
       return;
     }
 
+    let validPromoToConsume: PromoCodeItem | null = null;
+    if (appliedPromo && discountAmount > 0) {
+      const freshPromo = promos.find((p) => p.id === appliedPromo.id) || appliedPromo;
+      const reason = validatePromo(freshPromo);
+      if (reason) {
+        setPromoError(reason);
+        setAppliedPromo(null);
+        alert(reason);
+        return;
+      }
+      validPromoToConsume = freshPromo;
+    }
+
     setLoading(true);
     try {
       const receiptUrl = await compressImage(receiptFile);
       const generatedCode = `GEN-${Math.floor(1000 + Math.random() * 9000)}`;
+      const buyerIdentifier =
+        selectedGame === "Free Fire"
+          ? `${cleanFreeFireId} / ${whatsapp.trim()}`
+          : `${accountEmail.trim()} / ${whatsapp.trim()}`;
 
-      const docRef = await addDoc(collection(db, "orders"), {
-        orderNumber: generatedCode,
-        game: selectedGame,
-        packTitle: selectedPack.title,
-        priceTND: Number(selectedPack.price),
-        playerId: selectedGame === "Free Fire" ? playerId.trim() : "",
-        accountEmail: selectedGame !== "Free Fire" ? accountEmail.trim() : "",
-        accountPassword: selectedGame === "eFootball" ? accountPassword : "",
-        verificationCode: "",
-        whatsapp: whatsapp.trim(),
-        paymentMethod,
-        receiptUrl,
-        status: selectedGame === "eFootball" ? "en_attente_connexion" : "en_attente",
-        createdAt: serverTimestamp(),
+      const orderDocRef = doc(collection(db, "orders"));
+
+      await runTransaction(db, async (transaction) => {
+        let finalPromoCode = "";
+        let finalPriceToSave = Number(basePrice.toFixed(2));
+
+        if (validPromoToConsume) {
+          const promoRef = doc(db, "promos", validPromoToConsume.id);
+          const promoSnap = await transaction.get(promoRef);
+
+          if (!promoSnap.exists()) {
+            throw new Error("Code promo introuvable.");
+          }
+
+          const promoData = promoSnap.data() as PromoCodeItem;
+          if (promoData.active === false) {
+            throw new Error("Ce code promo est désactivé.");
+          }
+          if (promoData.singleUse && promoData.used) {
+            throw new Error("Ce code promo à usage unique a déjà été utilisé.");
+          }
+
+          const rem = computeDiscount(promoData, basePrice);
+          finalPriceToSave = Number(Math.max(0, basePrice - rem).toFixed(2));
+          finalPromoCode = promoData.code || validPromoToConsume.code;
+
+          if (promoData.singleUse) {
+            transaction.update(promoRef, {
+              used: true,
+              usedBy: buyerIdentifier,
+              usedAt: serverTimestamp(),
+            });
+          }
+        }
+
+        transaction.set(orderDocRef, {
+          orderNumber: generatedCode,
+          game: selectedGame,
+          packTitle: selectedPack.title,
+          priceTND: finalPriceToSave,
+          originalPriceTND: Number(basePrice.toFixed(2)),
+          promoCode: finalPromoCode,
+          playerId: selectedGame === "Free Fire" ? cleanFreeFireId : "",
+          accountEmail: selectedGame !== "Free Fire" ? accountEmail.trim() : "",
+          accountPassword: selectedGame === "eFootball" ? accountPassword : "",
+          verificationCode: "",
+          whatsapp: whatsapp.trim(),
+          paymentMethod,
+          receiptUrl,
+          status: selectedGame === "eFootball" ? "en_attente_connexion" : "en_attente",
+          createdAt: serverTimestamp(),
+        });
       });
 
-      setSubmittedDocId(docRef.id);
-    } catch (error) {
-      console.error("Erreur lors de la commande :", error);
-      alert("Une erreur est survenue lors de l'enregistrement.");
+      localStorage.setItem("genshop_last_wa", whatsapp.trim());
+      if (selectedGame === "Free Fire") {
+        localStorage.setItem("genshop_last_ff_id", cleanFreeFireId);
+      } else if (accountEmail.trim()) {
+        localStorage.setItem("genshop_last_email", accountEmail.trim());
+      }
+
+      setLastSubmitTime(Date.now());
+      setSubmittedDocId(orderDocRef.id);
+      setAppliedPromo(null);
+      setPromoInput("");
+      setPromoError(null);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : "Une erreur est survenue lors de l'enregistrement.";
+      alert(msg);
     } finally {
       setLoading(false);
     }
@@ -296,12 +582,10 @@ export default function GenShopOrderPage() {
     }
   };
 
-  const activePrice = selectedPack ? Number(selectedPack.price) : 0;
-
   return (
     <div className="min-h-screen bg-[#060B17] text-slate-100 font-sans selection:bg-amber-400 selection:text-slate-950">
       <header className="border-b border-amber-500/20 bg-[#0A1224]/95 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <img
               src="/logo.jpg"
@@ -324,22 +608,70 @@ export default function GenShopOrderPage() {
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-4 py-8">
-        <div className="bg-gradient-to-br from-[#0E1A36] via-[#0B1326] to-[#171625] border border-amber-400/25 rounded-2xl p-6 sm:p-8 mb-6 shadow-xl shadow-black/40">
+      <main className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+        <div className="bg-gradient-to-br from-[#0E1A36] via-[#0B1326] to-[#171625] border border-amber-400/25 rounded-2xl p-6 sm:p-8 shadow-xl shadow-black/40">
           <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-300 bg-amber-400/10 border border-amber-400/30 px-3 py-1 rounded-full mb-3">
-            <Sparkles className="w-3.5 h-3.5" /> Boutiques &amp; Tarifs en Temps Réel
+            <Sparkles className="w-3.5 h-3.5" /> Expérience Pro • Offres &amp; Cadeaux
           </div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-white mb-2">
             La référence recharge gaming en Tunisie
           </h1>
           <p className="text-slate-300 text-sm sm:text-base max-w-2xl">
-            Offres mises à jour dynamiquement, paiement local via D17, Flouci ou recharge, et suivi en direct.
+            Offres en temps réel, codes promo exclusifs, récompenses gratuites et paiement local via D17, Flouci ou recharge.
           </p>
         </div>
 
+        {giveawaySettings.enabled && (
+          <section className="bg-gradient-to-r from-[#131D38] via-[#18213E] to-[#1D192B] border border-amber-400/35 rounded-2xl p-5 sm:p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-amber-300">
+                <Gift className="w-4 h-4 text-amber-400" /> {giveawaySettings.title}
+              </div>
+              <p className="text-sm text-slate-300">{giveawaySettings.subtitle}</p>
+              {wonPrize && (
+                <div className="pt-1 text-sm font-extrabold text-emerald-400 flex items-center gap-1.5">
+                  <Trophy className="w-4 h-4 text-amber-400" /> Récompense débloquée : {wonPrize}
+                </div>
+              )}
+            </div>
+
+            {!wonPrize ? (
+              <div className="flex flex-col sm:flex-row gap-2.5">
+                <input
+                  type="text"
+                  placeholder="Pseudo ou WhatsApp (optionnel)"
+                  value={playerClaimName}
+                  onChange={(e) => setPlayerClaimName(e.target.value)}
+                  className="bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400"
+                />
+                <button
+                  type="button"
+                  onClick={handleClaimFreeReward}
+                  disabled={spinningPrize}
+                  className="bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-slate-950 font-black px-5 py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 whitespace-nowrap transition"
+                >
+                  {spinningPrize ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" /> Tirage...
+                    </>
+                  ) : (
+                    <>
+                      <Gift className="w-4 h-4" /> Gagner un cadeau gratuit
+                    </>
+                  )}
+                </button>
+              </div>
+            ) : (
+              <span className="text-xs font-bold px-3.5 py-2 rounded-xl bg-emerald-500/15 border border-emerald-400/35 text-emerald-300 self-start md:self-center">
+                Cadeau enregistré
+              </span>
+            )}
+          </section>
+        )}
+
         <form
           onSubmit={handleTrackSearch}
-          className="bg-[#0D162B] border border-slate-800 hover:border-amber-500/30 transition rounded-2xl p-4 mb-8 flex flex-col sm:flex-row gap-3"
+          className="bg-[#0D162B] border border-slate-800 hover:border-amber-500/30 transition rounded-2xl p-4 flex flex-col sm:flex-row gap-3"
         >
           <div className="flex-1 flex items-center gap-2 bg-[#060B17] border border-slate-700/80 rounded-xl px-3.5">
             <Search className="w-4 h-4 text-amber-400" />
@@ -359,7 +691,7 @@ export default function GenShopOrderPage() {
           </button>
         </form>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-8">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {gamesList.map((game) => {
             const active = selectedGame === game;
             return (
@@ -459,15 +791,36 @@ export default function GenShopOrderPage() {
               {selectedGame === "Free Fire" ? (
                 <div className="grid sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm text-slate-400 mb-1.5">ID Joueur (Player ID)</label>
+                    <label className="block text-sm text-slate-400 mb-1.5">
+                      ID Joueur Free Fire (10 chiffres)
+                    </label>
                     <input
                       type="text"
+                      inputMode="numeric"
+                      maxLength={14}
                       required
-                      placeholder="Ex: 123456789"
+                      placeholder="Ex: 1234567890"
                       value={playerId}
                       onChange={(e) => setPlayerId(e.target.value)}
-                      className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400"
+                      className={`w-full bg-[#060B17] border rounded-xl px-4 py-3 font-mono text-white focus:outline-none ${
+                        playerId.length === 0
+                          ? "border-slate-700 focus:border-amber-400"
+                          : freeFireIdValid
+                          ? "border-emerald-500 focus:border-emerald-400"
+                          : "border-red-500 focus:border-red-400"
+                      }`}
                     />
+                    <div className="mt-1.5 text-xs flex items-center justify-between">
+                      {playerId.length === 0 ? (
+                        <span className="text-slate-500">Doit contenir exactement 10 chiffres.</span>
+                      ) : freeFireIdValid ? (
+                        <span className="text-emerald-400 font-semibold">ID valide (10 chiffres).</span>
+                      ) : (
+                        <span className="text-red-400 font-semibold flex items-center gap-1">
+                          <AlertCircle className="w-3.5 h-3.5" /> {cleanFreeFireId.length}/10 chiffres requis
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm text-slate-400 mb-1.5">Numéro WhatsApp</label>
@@ -556,9 +909,12 @@ export default function GenShopOrderPage() {
                 </span>
                 <h2 className="text-lg font-bold text-white">Choisir l&apos;offre</h2>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
                 {filteredPacks.map((pack) => {
                   const isSelected = selectedPack?.id === pack.id;
+                  const computedBadge =
+                    pack.badge || (topPurchasedPackTitle === pack.title ? "Top Acheté" : "");
                   return (
                     <div
                       key={pack.id}
@@ -569,9 +925,9 @@ export default function GenShopOrderPage() {
                           : "bg-[#060B17] border-slate-800 hover:border-slate-700"
                       }`}
                     >
-                      {pack.badge && (
+                      {computedBadge && (
                         <span className="absolute -top-2.5 right-3 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
-                          {pack.badge}
+                          {computedBadge}
                         </span>
                       )}
                       <div className="font-bold text-base text-white mb-1">{pack.title}</div>
@@ -580,6 +936,47 @@ export default function GenShopOrderPage() {
                   );
                 })}
               </div>
+
+              <div className="pt-4 border-t border-slate-800/80 flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
+                <div className="flex-1 flex items-center gap-2 bg-[#060B17] border border-slate-700 rounded-xl px-3.5">
+                  <Tag className="w-4 h-4 text-amber-400" />
+                  <input
+                    type="text"
+                    placeholder="Code promo personnel / unique"
+                    value={promoInput}
+                    onChange={(e) => setPromoInput(e.target.value)}
+                    className="w-full bg-transparent py-2.5 text-sm text-white uppercase focus:outline-none"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleApplyPromo}
+                  className="bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-amber-300 border border-amber-400/30 px-4 py-2.5 rounded-xl text-sm font-bold transition"
+                >
+                  Appliquer promo
+                </button>
+              </div>
+
+              {promoError && (
+                <p className="mt-2.5 text-xs text-red-400 flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5" /> {promoError}
+                </p>
+              )}
+
+              {discountAmount > 0 && appliedPromo && (
+                <div className="mt-3 text-xs sm:text-sm text-emerald-400 flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3.5 py-2">
+                  <span>
+                    Code <strong>{appliedPromo.code}</strong> appliqué (-{discountAmount.toFixed(2)} TND)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAppliedPromo(null)}
+                    className="underline text-slate-300 hover:text-white text-xs"
+                  >
+                    Retirer
+                  </button>
+                </div>
+              )}
             </section>
 
             <section className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6">
@@ -612,7 +1009,7 @@ export default function GenShopOrderPage() {
                 {paymentMethod === "D17" && (
                   <>
                     <p>
-                      Envoyez <strong className="text-amber-300">{activePrice.toFixed(2)} TND</strong> via{" "}
+                      Envoyez <strong className="text-amber-300">{finalPrice.toFixed(2)} TND</strong> via{" "}
                       <strong className="text-white">D17</strong> au :{" "}
                       <strong className="text-amber-300 font-mono">
                         {!settingsLoaded
@@ -636,7 +1033,7 @@ export default function GenShopOrderPage() {
                 {paymentMethod === "Flouci" && (
                   <>
                     <p>
-                      Transférez <strong className="text-amber-300">{activePrice.toFixed(2)} TND</strong> via{" "}
+                      Transférez <strong className="text-amber-300">{finalPrice.toFixed(2)} TND</strong> via{" "}
                       <strong className="text-white">Flouci</strong> au :{" "}
                       <strong className="text-amber-300 font-mono">
                         {!settingsLoaded
@@ -659,7 +1056,7 @@ export default function GenShopOrderPage() {
 
                 {paymentMethod === "Recharge" && (
                   <p>
-                    Montant : <strong className="text-amber-300">{Math.ceil(activePrice)} TND</strong> —{" "}
+                    Montant : <strong className="text-amber-300">{Math.ceil(finalPrice)} TND</strong> —{" "}
                     {paymentSettings.rechargeNote}
                   </p>
                 )}
@@ -670,10 +1067,10 @@ export default function GenShopOrderPage() {
                 <span className="text-sm font-medium text-slate-200">
                   {receiptFile ? receiptFile.name : "Cliquez pour importer la capture du reçu"}
                 </span>
-                <span className="text-xs text-slate-500 mt-1">PNG, JPG</span>
+                <span className="text-xs text-slate-500 mt-1">PNG, JPG, WEBP</span>
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                   onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
                 />
@@ -682,7 +1079,7 @@ export default function GenShopOrderPage() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || (selectedGame === "Free Fire" && !freeFireIdValid)}
               className="w-full bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 disabled:opacity-50 text-slate-950 font-black py-4 rounded-xl text-lg shadow-lg shadow-amber-500/20 transition flex items-center justify-center gap-2"
             >
               {loading ? (
@@ -691,7 +1088,7 @@ export default function GenShopOrderPage() {
                 </>
               ) : (
                 <>
-                  <ShieldCheck className="w-5 h-5" /> Valider ma commande ({activePrice.toFixed(2)} TND)
+                  <ShieldCheck className="w-5 h-5" /> Valider ma commande ({finalPrice.toFixed(2)} TND)
                 </>
               )}
             </button>

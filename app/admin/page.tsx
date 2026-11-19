@@ -33,6 +33,10 @@ import {
   ShoppingBag,
   Plus,
   Save,
+  BarChart3,
+  Gift,
+  TrendingUp,
+  Download,
 } from "lucide-react";
 
 interface Order {
@@ -41,6 +45,7 @@ interface Order {
   game: string;
   packTitle: string;
   priceTND: number;
+  promoCode?: string;
   playerId?: string;
   accountEmail?: string;
   accountPassword?: string;
@@ -66,6 +71,25 @@ interface PaymentSettings {
   rechargeNote: string;
   deliveryTime: string;
   whatsappSupport: string;
+}
+
+interface PromoCodeItem {
+  id: string;
+  code: string;
+  discountTND: number;
+  discountPercent: number;
+  active?: boolean;
+  game?: string;
+  singleUse?: boolean;
+  used?: boolean;
+  usedBy?: string;
+  allowedUser?: string;
+}
+
+interface RewardClaimItem {
+  id: string;
+  prize: string;
+  contact: string;
 }
 
 const SEED_PACKS = [
@@ -98,8 +122,9 @@ export default function AdminDashboard() {
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [activeTab, setActiveTab] = useState<"orders" | "packs" | "settings">("orders");
+  const [activeTab, setActiveTab] = useState<"orders" | "stats" | "packs" | "offers" | "settings">("orders");
 
+  // Commandes
   const [orders, setOrders] = useState<Order[]>([]);
   const [previewOrder, setPreviewOrder] = useState<Order | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -107,6 +132,7 @@ export default function AdminDashboard() {
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
+  // Packs
   const [packs, setPacks] = useState<PackDoc[]>([]);
   const [newGame, setNewGame] = useState("Free Fire");
   const [newTitle, setNewTitle] = useState("");
@@ -114,6 +140,26 @@ export default function AdminDashboard() {
   const [newBadge, setNewBadge] = useState("");
   const [addingPack, setAddingPack] = useState(false);
 
+  // Codes promo & Cadeau gratuit
+  const [promos, setPromos] = useState<PromoCodeItem[]>([]);
+  const [promoCodeInput, setPromoCodeInput] = useState("");
+  const [promoDiscountTND, setPromoDiscountTND] = useState("2");
+  const [promoDiscountPercent, setPromoDiscountPercent] = useState("0");
+  const [promoGame, setPromoGame] = useState("ALL");
+  const [promoAllowedUser, setPromoAllowedUser] = useState("");
+  const [promoSingleUse, setPromoSingleUse] = useState(true);
+
+  const [giveawayEnabled, setGiveawayEnabled] = useState(true);
+  const [giveawayTitle, setGiveawayTitle] = useState("Cadeau Gratuit GEN SHOP");
+  const [giveawaySubtitle, setGiveawaySubtitle] = useState(
+    "Tente ta chance et débloque une récompense ou un avantage exclusif !"
+  );
+  const [giveawayPrizesText, setGiveawayPrizesText] = useState(
+    "Code Promo -2 TND (GEN2)\nBonus Diamants / Coins offert\nLivraison Ultra-Prioritaire\nRéduction -10% sur prochain pack"
+  );
+  const [rewardClaims, setRewardClaims] = useState<RewardClaimItem[]>([]);
+
+  // Paramètres paiement
   const [d17Phone, setD17Phone] = useState("");
   const [flouciPhone, setFlouciPhone] = useState("");
   const [rechargeNote, setRechargeNote] = useState(
@@ -129,6 +175,7 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     if (!user) return;
+
     const qOrders = query(collection(db, "orders"), orderBy("createdAt", "desc"));
     const unsubOrders = onSnapshot(qOrders, (snapshot) => {
       const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Order));
@@ -139,6 +186,27 @@ export default function AdminDashboard() {
     const unsubPacks = onSnapshot(qPacks, (snapshot) => {
       const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as PackDoc));
       setPacks(list);
+    });
+
+    const unsubPromos = onSnapshot(collection(db, "promos"), (snapshot) => {
+      const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as PromoCodeItem));
+      setPromos(list);
+    });
+
+    const unsubGiveaway = onSnapshot(doc(db, "settings", "giveaway"), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (typeof data.enabled === "boolean") setGiveawayEnabled(data.enabled);
+        if (data.title) setGiveawayTitle(data.title);
+        if (data.subtitle) setGiveawaySubtitle(data.subtitle);
+        if (Array.isArray(data.prizes)) setGiveawayPrizesText(data.prizes.join("\n"));
+      }
+    });
+
+    const qClaims = query(collection(db, "reward_claims"), orderBy("createdAt", "desc"));
+    const unsubClaims = onSnapshot(qClaims, (snapshot) => {
+      const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as RewardClaimItem));
+      setRewardClaims(list);
     });
 
     const unsubSettings = onSnapshot(doc(db, "settings", "payment"), (snap) => {
@@ -154,6 +222,9 @@ export default function AdminDashboard() {
     return () => {
       unsubOrders();
       unsubPacks();
+      unsubPromos();
+      unsubGiveaway();
+      unsubClaims();
       unsubSettings();
     };
   }, [user]);
@@ -174,12 +245,42 @@ export default function AdminDashboard() {
   };
 
   const updateStatus = async (orderId: string, newStatus: string) => {
-    await updateDoc(doc(db, "orders", orderId), { status: newStatus });
+    const payload: Record<string, string> = { status: newStatus };
+    if (newStatus === "livree" || newStatus === "rejetee") {
+      payload.accountPassword = "";
+      payload.verificationCode = "";
+    }
+    await updateDoc(doc(db, "orders", orderId), payload);
   };
 
   const handleDeleteOrder = async (orderId: string, orderNumber: string) => {
     if (!window.confirm(`Supprimer définitivement la commande ${orderNumber} ?`)) return;
     await deleteDoc(doc(db, "orders", orderId));
+  };
+
+  const handleExportCsv = () => {
+    const headers = ["Numéro", "Catégorie", "Offre", "Prix (TND)", "Promo", "Paiement", "WhatsApp", "Statut"];
+    const rows = orders.map((o) => [
+      o.orderNumber,
+      o.game,
+      o.packTitle,
+      Number(o.priceTND || 0).toFixed(2),
+      o.promoCode || "",
+      o.paymentMethod,
+      o.whatsapp,
+      o.status,
+    ]);
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [headers, ...rows].map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(";")).join("\n");
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `genshop-commandes-${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const handleAddPack = async (e: React.FormEvent) => {
@@ -228,6 +329,53 @@ export default function AdminDashboard() {
     await deleteDoc(doc(db, "packs", packId));
   };
 
+  const handleCreatePromo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanCode = promoCodeInput.trim().toUpperCase();
+    if (!cleanCode) return;
+    await addDoc(collection(db, "promos"), {
+      code: cleanCode,
+      discountTND: parseFloat(promoDiscountTND) || 0,
+      discountPercent: parseFloat(promoDiscountPercent) || 0,
+      game: promoGame,
+      allowedUser: promoAllowedUser.trim(),
+      singleUse: promoSingleUse,
+      used: false,
+      usedBy: "",
+      active: true,
+    });
+    setPromoCodeInput("");
+    setPromoAllowedUser("");
+  };
+
+  const handleTogglePromo = async (promo: PromoCodeItem) => {
+    await updateDoc(doc(db, "promos", promo.id), { active: promo.active === false ? true : false });
+  };
+
+  const handleDeletePromo = async (promoId: string) => {
+    await deleteDoc(doc(db, "promos", promoId));
+  };
+
+  const handleSaveGiveaway = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const prizesList = giveawayPrizesText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    await setDoc(
+      doc(db, "settings", "giveaway"),
+      {
+        enabled: giveawayEnabled,
+        title: giveawayTitle.trim(),
+        subtitle: giveawaySubtitle.trim(),
+        prizes: prizesList.length > 0 ? prizesList : ["Code Promo -2 TND (GEN2)"],
+      },
+      { merge: true }
+    );
+    alert("Configuration du cadeau gratuit enregistrée !");
+  };
+
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingSettings(true);
@@ -252,11 +400,31 @@ export default function AdminDashboard() {
     const pendingCount = orders.filter((o) => o.status !== "livree" && o.status !== "rejetee").length;
     const deliveredOrders = orders.filter((o) => o.status === "livree");
     const revenueTND = deliveredOrders.reduce((acc, o) => acc + (Number(o.priceTND) || 0), 0);
+
+    const packMap: Record<string, { title: string; game: string; count: number; totalTND: number }> = {};
+    for (const o of orders) {
+      const key = `${o.game} — ${o.packTitle}`;
+      if (!packMap[key]) {
+        packMap[key] = { title: o.packTitle, game: o.game, count: 0, totalTND: 0 };
+      }
+      packMap[key].count += 1;
+      packMap[key].totalTND += Number(o.priceTND) || 0;
+    }
+    const topPacks = Object.values(packMap).sort((a, b) => b.count - a.count);
+
+    const paymentCounts: Record<string, number> = {};
+    for (const o of orders) {
+      const m = o.paymentMethod || "Autre";
+      paymentCounts[m] = (paymentCounts[m] || 0) + 1;
+    }
+
     return {
       total: orders.length,
       pendingCount,
       deliveredCount: deliveredOrders.length,
       revenueTND,
+      topPacks,
+      paymentCounts,
     };
   }, [orders]);
 
@@ -327,7 +495,7 @@ export default function AdminDashboard() {
             />
             <div>
               <h1 className="text-xl sm:text-2xl font-extrabold text-amber-300">Tableau de bord — GEN SHOP</h1>
-              <p className="text-xs text-slate-400">Pilotage dynamique : commandes, prix, numéros &amp; OTP</p>
+              <p className="text-xs text-slate-400">Commandes, statistiques top offres, promos &amp; cadeaux</p>
             </div>
           </div>
 
@@ -339,6 +507,7 @@ export default function AdminDashboard() {
           </button>
         </div>
 
+        {/* Navigation */}
         <div className="flex gap-2 mb-6 flex-wrap">
           <button
             onClick={() => setActiveTab("orders")}
@@ -351,6 +520,16 @@ export default function AdminDashboard() {
             <ShoppingBag className="w-4 h-4" /> Commandes ({orders.length})
           </button>
           <button
+            onClick={() => setActiveTab("stats")}
+            className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 border transition ${
+              activeTab === "stats"
+                ? "bg-amber-400 text-slate-950 border-amber-300"
+                : "bg-[#0D162B] text-slate-300 border-slate-800 hover:border-amber-500/30"
+            }`}
+          >
+            <BarChart3 className="w-4 h-4" /> Statistiques &amp; Top Offres
+          </button>
+          <button
             onClick={() => setActiveTab("packs")}
             className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 border transition ${
               activeTab === "packs"
@@ -359,6 +538,16 @@ export default function AdminDashboard() {
             }`}
           >
             <Package className="w-4 h-4" /> Packs &amp; Prix ({packs.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("offers")}
+            className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 border transition ${
+              activeTab === "offers"
+                ? "bg-amber-400 text-slate-950 border-amber-300"
+                : "bg-[#0D162B] text-slate-300 border-slate-800 hover:border-amber-500/30"
+            }`}
+          >
+            <Gift className="w-4 h-4" /> Promos &amp; Cadeaux
           </button>
           <button
             onClick={() => setActiveTab("settings")}
@@ -372,6 +561,7 @@ export default function AdminDashboard() {
           </button>
         </div>
 
+        {/* ONGLET 1 : COMMANDES */}
         {activeTab === "orders" && (
           <>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
@@ -435,6 +625,14 @@ export default function AdminDashboard() {
                 <option value="livree">livree</option>
                 <option value="rejetee">rejetee</option>
               </select>
+
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-400/30 px-4 py-2 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition"
+              >
+                <Download className="w-4 h-4" /> CSV
+              </button>
             </div>
 
             <div className="space-y-4">
@@ -452,6 +650,11 @@ export default function AdminDashboard() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mono font-bold text-amber-300">{order.orderNumber}</span>
                         <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-200">{order.game}</span>
+                        {order.promoCode && (
+                          <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold">
+                            Promo: {order.promoCode}
+                          </span>
+                        )}
                         <span
                           className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${
                             order.status === "livree"
@@ -589,6 +792,82 @@ export default function AdminDashboard() {
           </>
         )}
 
+        {/* ONGLET 2 : STATISTIQUES & TOP OFFRES */}
+        {activeTab === "stats" && (
+          <div className="grid lg:grid-cols-2 gap-6">
+            <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-4">
+              <div className="flex items-center gap-2 text-amber-300 font-bold text-lg">
+                <TrendingUp className="w-5 h-5" /> Offres les plus achetées
+              </div>
+
+              {stats.topPacks.length === 0 ? (
+                <p className="text-sm text-slate-400">Aucune commande enregistrée pour l&apos;instant.</p>
+              ) : (
+                <div className="space-y-3">
+                  {stats.topPacks.map((p, idx) => (
+                    <div
+                      key={`${p.game}-${p.title}`}
+                      className="bg-[#060B17] border border-slate-800 rounded-xl p-3.5 flex items-center justify-between gap-3"
+                    >
+                      <div>
+                        <div className="text-xs text-amber-300 font-bold">
+                          #{idx + 1} • {p.game}
+                        </div>
+                        <div className="font-bold text-white text-sm sm:text-base">{p.title}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-black text-amber-300 text-sm sm:text-base">{p.count} achat(s)</div>
+                        <div className="text-xs text-emerald-400">{p.totalTND.toFixed(2)} TND</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-6">
+              <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-3">
+                <h2 className="text-lg font-bold text-amber-300">Modes de paiement utilisés</h2>
+                {Object.keys(stats.paymentCounts).length === 0 ? (
+                  <p className="text-sm text-slate-400">Aucune donnée disponible.</p>
+                ) : (
+                  Object.entries(stats.paymentCounts).map(([method, count]) => (
+                    <div
+                      key={method}
+                      className="bg-[#060B17] border border-slate-800 rounded-xl px-4 py-3 flex items-center justify-between text-sm"
+                    >
+                      <span className="font-bold text-white">{method}</span>
+                      <span className="font-extrabold text-amber-300">{count} commande(s)</span>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-3">
+                <h2 className="text-lg font-bold text-amber-300">
+                  Récompenses gratuites réclamées ({rewardClaims.length})
+                </h2>
+                {rewardClaims.length === 0 ? (
+                  <p className="text-sm text-slate-400">Aucun cadeau réclamé pour l&apos;instant.</p>
+                ) : (
+                  <div className="space-y-2 max-h-64 overflow-auto">
+                    {rewardClaims.slice(0, 15).map((c) => (
+                      <div
+                        key={c.id}
+                        className="bg-[#060B17] border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm flex items-center justify-between gap-2"
+                      >
+                        <span className="text-emerald-400 font-bold">{c.prize}</span>
+                        <span className="text-slate-400">{c.contact}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ONGLET 3 : PACKS & PRIX */}
         {activeTab === "packs" && (
           <div className="space-y-6">
             <form onSubmit={handleAddPack} className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-4">
@@ -707,6 +986,176 @@ export default function AdminDashboard() {
           </div>
         )}
 
+        {/* ONGLET 4 : PROMOS & CADEAUX GRATUITS */}
+        {activeTab === "offers" && (
+          <div className="grid lg:grid-cols-2 gap-6">
+            <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h2 className="text-lg font-bold text-amber-300">Codes Promo Dynamiques</h2>
+
+              <form onSubmit={handleCreatePromo} className="space-y-3">
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <input
+                    type="text"
+                    placeholder="Code (ex: GEN2)"
+                    value={promoCodeInput}
+                    onChange={(e) => setPromoCodeInput(e.target.value)}
+                    className="bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white uppercase focus:outline-none focus:border-amber-400"
+                    required
+                  />
+                  <select
+                    value={promoGame}
+                    onChange={(e) => setPromoGame(e.target.value)}
+                    className="bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400"
+                  >
+                    <option value="ALL">Toutes catégories</option>
+                    <option value="Free Fire">Free Fire</option>
+                    <option value="eFootball">eFootball</option>
+                    <option value="Netflix">Netflix</option>
+                  </select>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Réduction fixe (TND)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={promoDiscountTND}
+                      onChange={(e) => setPromoDiscountTND(e.target.value)}
+                      className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Réduction (%)</label>
+                    <input
+                      type="number"
+                      step="1"
+                      value={promoDiscountPercent}
+                      onChange={(e) => setPromoDiscountPercent(e.target.value)}
+                      className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white"
+                    />
+                  </div>
+                </div>
+
+                <input
+                  type="text"
+                  placeholder="Utilisateur autorisé (WhatsApp / ID / e-mail, optionnel)"
+                  value={promoAllowedUser}
+                  onChange={(e) => setPromoAllowedUser(e.target.value)}
+                  className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400"
+                />
+
+                <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={promoSingleUse}
+                    onChange={(e) => setPromoSingleUse(e.target.checked)}
+                    className="rounded border-slate-700"
+                  />
+                  Code à usage unique (désactivé automatiquement après 1 commande)
+                </label>
+
+                <button
+                  type="submit"
+                  className="bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black px-4 py-2.5 rounded-xl text-sm flex items-center gap-2"
+                >
+                  <Plus className="w-4 h-4" /> Créer le code promo
+                </button>
+              </form>
+
+              <div className="space-y-2.5 pt-2">
+                {promos.map((pr) => (
+                  <div
+                    key={pr.id}
+                    className="bg-[#060B17] border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-2 text-sm"
+                  >
+                    <div>
+                      <strong className="font-mono text-amber-300">{pr.code}</strong>
+                      <div className="text-xs text-slate-400 mt-0.5">
+                        {pr.game || "ALL"} • -{Number(pr.discountTND || 0).toFixed(2)} TND / -
+                        {Number(pr.discountPercent || 0)}%
+                        {pr.allowedUser && ` • Pour : ${pr.allowedUser}`}
+                        {pr.singleUse &&
+                          (pr.used
+                            ? ` • Utilisé (${pr.usedBy || "oui"})`
+                            : " • Usage unique (disponible)")}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePromo(pr)}
+                        className="text-xs bg-slate-800 hover:bg-slate-700 px-2.5 py-1 rounded-lg font-bold"
+                      >
+                        {pr.active === false ? "Activer" : "Désactiver"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeletePromo(pr.id)}
+                        className="text-red-400 hover:text-red-300 p-1"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveGiveaway} className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-4">
+              <h2 className="text-lg font-bold text-amber-300">Module Gain Gratuit</h2>
+
+              <label className="flex items-center gap-2 text-sm text-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={giveawayEnabled}
+                  onChange={(e) => setGiveawayEnabled(e.target.checked)}
+                  className="rounded border-slate-700"
+                />
+                Activer le module Gain Gratuit sur la boutique
+              </label>
+
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Titre</label>
+                <input
+                  type="text"
+                  value={giveawayTitle}
+                  onChange={(e) => setGiveawayTitle(e.target.value)}
+                  className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Sous-titre</label>
+                <input
+                  type="text"
+                  value={giveawaySubtitle}
+                  onChange={(e) => setGiveawaySubtitle(e.target.value)}
+                  className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Récompenses possibles (une par ligne)</label>
+                <textarea
+                  rows={4}
+                  value={giveawayPrizesText}
+                  onChange={(e) => setGiveawayPrizesText(e.target.value)}
+                  className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black px-5 py-2.5 rounded-xl text-sm flex items-center gap-2"
+              >
+                <Save className="w-4 h-4" /> Enregistrer les cadeaux
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* ONGLET 5 : PAIEMENT & INFOS */}
         {activeTab === "settings" && (
           <form onSubmit={handleSaveSettings} className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-4 max-w-2xl">
             <h2 className="text-lg font-bold text-amber-300">Paramètres dynamiques de la boutique</h2>
@@ -763,6 +1212,7 @@ export default function AdminDashboard() {
         )}
       </div>
 
+      {/* Modal aperçu reçu */}
       {previewOrder && (
         <div
           onClick={() => setPreviewOrder(null)}
