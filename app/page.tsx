@@ -20,6 +20,8 @@ import {
   Tag,
   Trophy,
   AlertCircle,
+  PauseCircle,
+  Receipt,
 } from "lucide-react";
 import { db } from "@/lib/firebase";
 import {
@@ -49,6 +51,8 @@ export interface PaymentSettings {
   rechargeNote: string;
   deliveryTime: string;
   whatsappSupport: string;
+  shopPaused?: boolean;
+  pauseMessage?: string;
 }
 
 export interface PromoCodeItem {
@@ -104,6 +108,8 @@ const DEFAULT_SETTINGS: PaymentSettings = {
   rechargeNote: "Envoyez une photo claire du ticket de recharge (TT / Ooredoo / Orange) correspondant au montant exact.",
   deliveryTime: "Livraison 5-15 min",
   whatsappSupport: "",
+  shopPaused: false,
+  pauseMessage: "La livraison peut prendre un peu plus de temps actuellement. Vos commandes restent enregistrées.",
 };
 
 const DEFAULT_GIVEAWAY: GiveawaySettings = {
@@ -185,6 +191,7 @@ export default function GenShopOrderPage() {
   const [trackQuery, setTrackQuery] = useState("");
   const [allOrdersSnap, setAllOrdersSnap] = useState<TrackedOrder[]>([]);
   const [copiedPhone, setCopiedPhone] = useState(false);
+  const [copiedOrderNum, setCopiedOrderNum] = useState(false);
 
   const cleanFreeFireId = normalizeDigits(playerId);
   const freeFireIdValid = isValidFreeFireId(playerId);
@@ -225,6 +232,8 @@ export default function GenShopOrderPage() {
           rechargeNote: data.rechargeNote ?? DEFAULT_SETTINGS.rechargeNote,
           deliveryTime: data.deliveryTime ?? DEFAULT_SETTINGS.deliveryTime,
           whatsappSupport: data.whatsappSupport ?? "",
+          shopPaused: Boolean(data.shopPaused),
+          pauseMessage: data.pauseMessage || DEFAULT_SETTINGS.pauseMessage,
         });
       }
       setSettingsLoaded(true);
@@ -436,6 +445,13 @@ export default function GenShopOrderPage() {
     setTimeout(() => setCopiedPhone(false), 1500);
   };
 
+  const copyOrderNumber = (num: string) => {
+    if (!num) return;
+    navigator.clipboard.writeText(num);
+    setCopiedOrderNum(true);
+    setTimeout(() => setCopiedOrderNum(false), 1500);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -582,6 +598,14 @@ export default function GenShopOrderPage() {
     }
   };
 
+  const progressStep = useMemo(() => {
+    if (!liveOrder) return 1;
+    if (liveOrder.status === "livree") return 4;
+    if (liveOrder.status === "code_recu") return 3;
+    if (liveOrder.status === "attente_code_client" || liveOrder.status === "en_attente_connexion") return 2;
+    return 1;
+  }, [liveOrder]);
+
   return (
     <div className="min-h-screen bg-[#060B17] text-slate-100 font-sans selection:bg-amber-400 selection:text-slate-950">
       <header className="border-b border-amber-500/20 bg-[#0A1224]/95 backdrop-blur-md sticky top-0 z-50">
@@ -609,6 +633,13 @@ export default function GenShopOrderPage() {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+        {paymentSettings.shopPaused && (
+          <div className="bg-amber-500/15 border border-amber-400/40 rounded-2xl p-4 flex items-center gap-3 text-amber-200 text-sm">
+            <PauseCircle className="w-5 h-5 text-amber-400 shrink-0" />
+            <span>{paymentSettings.pauseMessage}</span>
+          </div>
+        )}
+
         <div className="bg-gradient-to-br from-[#0E1A36] via-[#0B1326] to-[#171625] border border-amber-400/25 rounded-2xl p-6 sm:p-8 shadow-xl shadow-black/40">
           <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-300 bg-amber-400/10 border border-amber-400/30 px-3 py-1 rounded-full mb-3">
             <Sparkles className="w-3.5 h-3.5" /> Expérience Pro • Offres &amp; Cadeaux
@@ -715,7 +746,17 @@ export default function GenShopOrderPage() {
           <div className="bg-[#0D162B] border border-amber-400/35 rounded-2xl p-6 sm:p-8 space-y-6">
             <div className="text-center">
               <CheckCircle2 className="w-14 h-14 text-emerald-400 mx-auto mb-3" />
-              <h2 className="text-2xl font-bold text-white mb-1">Commande {liveOrder.orderNumber}</h2>
+              <div className="flex items-center justify-center gap-2 mb-1">
+                <h2 className="text-2xl font-bold text-white">Commande {liveOrder.orderNumber}</h2>
+                <button
+                  type="button"
+                  onClick={() => copyOrderNumber(liveOrder.orderNumber)}
+                  className="text-xs bg-slate-800 hover:bg-slate-700 text-amber-300 px-2.5 py-1 rounded-lg flex items-center gap-1 font-bold"
+                >
+                  {copiedOrderNum ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedOrderNum ? "Copié" : "Copier"}
+                </button>
+              </div>
               <p className="text-slate-400 text-sm">
                 {liveOrder.game} • <strong className="text-amber-300">{liveOrder.packTitle}</strong> •{" "}
                 <strong className="text-white">{Number(liveOrder.priceTND).toFixed(2)} TND</strong>
@@ -723,6 +764,26 @@ export default function GenShopOrderPage() {
               <div className="mt-3 inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1 rounded-full bg-amber-500/15 border border-amber-400/30 text-amber-300">
                 <Clock className="w-3.5 h-3.5" /> Statut actuel : {liveOrder.status}
               </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              {[
+                { step: 1, label: "Reçu envoyé" },
+                { step: 2, label: "Vérification / Connexion" },
+                { step: 3, label: "Code OTP" },
+                { step: 4, label: "Livré" },
+              ].map((item) => (
+                <div
+                  key={item.step}
+                  className={`rounded-xl p-2.5 border text-center font-bold ${
+                    progressStep >= item.step
+                      ? "bg-emerald-500/15 border-emerald-400/40 text-emerald-300"
+                      : "bg-[#060B17] border-slate-800 text-slate-500"
+                  }`}
+                >
+                  {item.step}. {item.label}
+                </div>
+              ))}
             </div>
 
             {liveOrder.game === "eFootball" && liveOrder.status !== "livree" && liveOrder.status !== "rejetee" && (
@@ -812,7 +873,7 @@ export default function GenShopOrderPage() {
                     />
                     <div className="mt-1.5 text-xs flex items-center justify-between">
                       {playerId.length === 0 ? (
-                        <span className="text-slate-500">Doit contenir exactement 10 chiffres.</span>
+                        <span className="text-slate-500">Visible sur ton profil Free Fire (10 chiffres).</span>
                       ) : freeFireIdValid ? (
                         <span className="text-emerald-400 font-semibold">ID valide (10 chiffres).</span>
                       ) : (
@@ -1075,6 +1136,21 @@ export default function GenShopOrderPage() {
                   onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
                 />
               </label>
+
+              {/* Récapitulatif clair */}
+              <div className="mt-5 bg-[#060B17] border border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm">
+                <div className="flex items-center gap-2 text-slate-300">
+                  <Receipt className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>
+                    <strong className="text-white">{selectedGame}</strong> •{" "}
+                    {selectedPack ? selectedPack.title : "Aucune offre"} •{" "}
+                    <span className="text-amber-300 font-semibold">{paymentMethod}</span>
+                  </span>
+                </div>
+                <div className="text-right font-black text-base text-amber-300">
+                  Total : {finalPrice.toFixed(2)} TND
+                </div>
+              </div>
             </section>
 
             <button

@@ -13,6 +13,7 @@ import {
   deleteDoc,
   addDoc,
   setDoc,
+  Timestamp,
 } from "firebase/firestore";
 import {
   Check,
@@ -37,6 +38,7 @@ import {
   Gift,
   TrendingUp,
   Download,
+  RotateCcw,
 } from "lucide-react";
 
 interface Order {
@@ -54,6 +56,7 @@ interface Order {
   paymentMethod: string;
   receiptUrl: string;
   status: string;
+  createdAt?: Timestamp | { seconds?: number };
 }
 
 interface PackDoc {
@@ -71,6 +74,8 @@ interface PaymentSettings {
   rechargeNote: string;
   deliveryTime: string;
   whatsappSupport: string;
+  shopPaused?: boolean;
+  pauseMessage?: string;
 }
 
 interface PromoCodeItem {
@@ -118,11 +123,38 @@ const buildWhatsAppUrl = (rawPhone: string, order: Order) => {
   return `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;
 };
 
+const toLocalDayKey = (d: Date) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const parseLocalDayKey = (dayKey: string): Date => {
+  const parts = dayKey.split("-").map(Number);
+  if (parts.length === 3 && parts.every((n) => !Number.isNaN(n))) {
+    return new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
+  }
+  return new Date(2026, 0, 1, 0, 0, 0, 0);
+};
+
+const getOrderDate = (createdAt: Order["createdAt"]): Date | null => {
+  if (!createdAt) return null;
+  if (typeof (createdAt as Timestamp).toDate === "function") {
+    return (createdAt as Timestamp).toDate();
+  }
+  if (typeof (createdAt as { seconds?: number }).seconds === "number") {
+    return new Date((createdAt as { seconds: number }).seconds * 1000);
+  }
+  return null;
+};
+
 export default function AdminDashboard() {
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [activeTab, setActiveTab] = useState<"orders" | "stats" | "packs" | "offers" | "settings">("orders");
+  const [clientTodayKey, setClientTodayKey] = useState<string>("2026-01-01");
 
   // Commandes
   const [orders, setOrders] = useState<Order[]>([]);
@@ -159,14 +191,22 @@ export default function AdminDashboard() {
   );
   const [rewardClaims, setRewardClaims] = useState<RewardClaimItem[]>([]);
 
-  // Paramètres paiement
+  // Paramètres paiement & boutique
   const [d17Phone, setD17Phone] = useState("");
   const [flouciPhone, setFlouciPhone] = useState("");
   const [rechargeNote, setRechargeNote] = useState(
     "Envoyez une photo claire du ticket de recharge (TT / Ooredoo / Orange) correspondant au montant exact."
   );
   const [deliveryTime, setDeliveryTime] = useState("Livraison 5-15 min");
+  const [shopPaused, setShopPaused] = useState(false);
+  const [pauseMessage, setPauseMessage] = useState(
+    "La livraison peut prendre un peu plus de temps actuellement. Vos commandes restent enregistrées."
+  );
   const [savingSettings, setSavingSettings] = useState(false);
+
+  useEffect(() => {
+    setClientTodayKey(toLocalDayKey(new Date()));
+  }, []);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (currentUser) => setUser(currentUser));
@@ -216,6 +256,8 @@ export default function AdminDashboard() {
         if (data.flouciPhone !== undefined) setFlouciPhone(data.flouciPhone);
         if (data.rechargeNote !== undefined) setRechargeNote(data.rechargeNote);
         if (data.deliveryTime !== undefined) setDeliveryTime(data.deliveryTime);
+        if (typeof data.shopPaused === "boolean") setShopPaused(data.shopPaused);
+        if (data.pauseMessage) setPauseMessage(data.pauseMessage);
       }
     });
 
@@ -259,6 +301,7 @@ export default function AdminDashboard() {
   };
 
   const handleExportCsv = () => {
+    const exportDate = toLocalDayKey(new Date());
     const headers = ["Numéro", "Catégorie", "Offre", "Prix (TND)", "Promo", "Paiement", "WhatsApp", "Statut"];
     const rows = orders.map((o) => [
       o.orderNumber,
@@ -277,7 +320,7 @@ export default function AdminDashboard() {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `genshop-commandes-${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute("download", `genshop-commandes-${exportDate}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -352,6 +395,14 @@ export default function AdminDashboard() {
     await updateDoc(doc(db, "promos", promo.id), { active: promo.active === false ? true : false });
   };
 
+  const handleResetPromoUsage = async (promo: PromoCodeItem) => {
+    await updateDoc(doc(db, "promos", promo.id), {
+      used: false,
+      usedBy: "",
+      active: true,
+    });
+  };
+
   const handleDeletePromo = async (promoId: string) => {
     await deleteDoc(doc(db, "promos", promoId));
   };
@@ -387,6 +438,8 @@ export default function AdminDashboard() {
           flouciPhone: flouciPhone.trim(),
           rechargeNote: rechargeNote.trim(),
           deliveryTime: deliveryTime.trim(),
+          shopPaused,
+          pauseMessage: pauseMessage.trim(),
         },
         { merge: true }
       );
@@ -400,6 +453,39 @@ export default function AdminDashboard() {
     const pendingCount = orders.filter((o) => o.status !== "livree" && o.status !== "rejetee").length;
     const deliveredOrders = orders.filter((o) => o.status === "livree");
     const revenueTND = deliveredOrders.reduce((acc, o) => acc + (Number(o.priceTND) || 0), 0);
+
+    const baseDate = parseLocalDayKey(clientTodayKey);
+    const todayKey = toLocalDayKey(baseDate);
+    let todayOrdersCount = 0;
+    let todayDeliveredTND = 0;
+
+    const days: { key: string; label: string; ordersCount: number; revenueTND: number }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() - i);
+      const key = toLocalDayKey(d);
+      const label = d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
+      days.push({ key, label, ordersCount: 0, revenueTND: 0 });
+    }
+    const dayMap = Object.fromEntries(days.map((item) => [item.key, item]));
+
+    for (const o of orders) {
+      const dt = getOrderDate(o.createdAt);
+      if (dt && !Number.isNaN(dt.getTime())) {
+        const k = toLocalDayKey(dt);
+        if (k === todayKey) {
+          todayOrdersCount += 1;
+          if (o.status === "livree") {
+            todayDeliveredTND += Number(o.priceTND) || 0;
+          }
+        }
+        if (dayMap[k]) {
+          dayMap[k].ordersCount += 1;
+          if (o.status === "livree") {
+            dayMap[k].revenueTND += Number(o.priceTND) || 0;
+          }
+        }
+      }
+    }
 
     const packMap: Record<string, { title: string; game: string; count: number; totalTND: number }> = {};
     for (const o of orders) {
@@ -423,10 +509,50 @@ export default function AdminDashboard() {
       pendingCount,
       deliveredCount: deliveredOrders.length,
       revenueTND,
+      todayOrdersCount,
+      todayDeliveredTND,
+      sevenDaysSeries: days,
       topPacks,
       paymentCounts,
     };
-  }, [orders]);
+  }, [orders, clientTodayKey]);
+
+  const chartData = useMemo(() => {
+    const width = 560;
+    const height = 180;
+    const padLeft = 28;
+    const padRight = 20;
+    const padTop = 20;
+    const padBottom = 28;
+    const plotW = width - padLeft - padRight;
+    const plotH = height - padTop - padBottom;
+
+    const maxRevenue = Math.max(10, ...stats.sevenDaysSeries.map((d) => d.revenueTND));
+    const maxOrders = Math.max(1, ...stats.sevenDaysSeries.map((d) => d.ordersCount));
+
+    const revenuePoints = stats.sevenDaysSeries.map((d, idx) => {
+      const x =
+        stats.sevenDaysSeries.length === 1
+          ? padLeft + plotW / 2
+          : padLeft + (idx / (stats.sevenDaysSeries.length - 1)) * plotW;
+      const y = padTop + plotH - (d.revenueTND / maxRevenue) * plotH;
+      return { x, y, ...d };
+    });
+
+    const ordersPoints = stats.sevenDaysSeries.map((d, idx) => {
+      const x =
+        stats.sevenDaysSeries.length === 1
+          ? padLeft + plotW / 2
+          : padLeft + (idx / (stats.sevenDaysSeries.length - 1)) * plotW;
+      const y = padTop + plotH - (d.ordersCount / maxOrders) * plotH;
+      return { x, y, ...d };
+    });
+
+    const revenueLine = revenuePoints.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+    const ordersLine = ordersPoints.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+
+    return { width, height, padTop, plotH, maxRevenue, revenuePoints, ordersPoints, revenueLine, ordersLine };
+  }, [stats.sevenDaysSeries]);
 
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
@@ -495,7 +621,7 @@ export default function AdminDashboard() {
             />
             <div>
               <h1 className="text-xl sm:text-2xl font-extrabold text-amber-300">Tableau de bord — GEN SHOP</h1>
-              <p className="text-xs text-slate-400">Commandes, statistiques top offres, promos &amp; cadeaux</p>
+              <p className="text-xs text-slate-400">Commandes, courbes statistiques, top offres, promos &amp; cadeaux</p>
             </div>
           </div>
 
@@ -794,74 +920,168 @@ export default function AdminDashboard() {
 
         {/* ONGLET 2 : STATISTIQUES & TOP OFFRES */}
         {activeTab === "stats" && (
-          <div className="grid lg:grid-cols-2 gap-6">
-            <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-4">
-              <div className="flex items-center gap-2 text-amber-300 font-bold text-lg">
-                <TrendingUp className="w-5 h-5" /> Offres les plus achetées
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-4">
+                <div className="text-xs text-slate-400 mb-1">Commandes aujourd&apos;hui</div>
+                <div className="text-2xl font-black text-white">{stats.todayOrdersCount}</div>
               </div>
-
-              {stats.topPacks.length === 0 ? (
-                <p className="text-sm text-slate-400">Aucune commande enregistrée pour l&apos;instant.</p>
-              ) : (
-                <div className="space-y-3">
-                  {stats.topPacks.map((p, idx) => (
-                    <div
-                      key={`${p.game}-${p.title}`}
-                      className="bg-[#060B17] border border-slate-800 rounded-xl p-3.5 flex items-center justify-between gap-3"
-                    >
-                      <div>
-                        <div className="text-xs text-amber-300 font-bold">
-                          #{idx + 1} • {p.game}
-                        </div>
-                        <div className="font-bold text-white text-sm sm:text-base">{p.title}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="font-black text-amber-300 text-sm sm:text-base">{p.count} achat(s)</div>
-                        <div className="text-xs text-emerald-400">{p.totalTND.toFixed(2)} TND</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div className="bg-[#0D162B] border border-emerald-500/25 rounded-2xl p-4">
+                <div className="text-xs text-emerald-400 mb-1">CA livré aujourd&apos;hui</div>
+                <div className="text-2xl font-black text-emerald-400">{stats.todayDeliveredTND.toFixed(2)} TND</div>
+              </div>
+              <div className="bg-[#0D162B] border border-amber-500/25 rounded-2xl p-4">
+                <div className="text-xs text-amber-300 mb-1">CA livré total</div>
+                <div className="text-2xl font-black text-amber-300">{stats.revenueTND.toFixed(2)} TND</div>
+              </div>
             </div>
 
-            <div className="space-y-6">
-              <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-3">
-                <h2 className="text-lg font-bold text-amber-300">Modes de paiement utilisés</h2>
-                {Object.keys(stats.paymentCounts).length === 0 ? (
-                  <p className="text-sm text-slate-400">Aucune donnée disponible.</p>
-                ) : (
-                  Object.entries(stats.paymentCounts).map(([method, count]) => (
-                    <div
-                      key={method}
-                      className="bg-[#060B17] border border-slate-800 rounded-xl px-4 py-3 flex items-center justify-between text-sm"
-                    >
-                      <span className="font-bold text-white">{method}</span>
-                      <span className="font-extrabold text-amber-300">{count} commande(s)</span>
-                    </div>
-                  ))
-                )}
+            <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <h2 className="text-lg font-bold text-amber-300 flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5" /> Courbe d&apos;évolution (7 derniers jours)
+                </h2>
+                <div className="flex items-center gap-4 text-xs font-semibold">
+                  <span className="flex items-center gap-1.5 text-amber-300">
+                    <span className="w-3 h-1 rounded-full bg-amber-400 inline-block" /> CA livré (TND)
+                  </span>
+                  <span className="flex items-center gap-1.5 text-emerald-400">
+                    <span className="w-3 h-1 rounded-full bg-emerald-400 inline-block" /> Commandes
+                  </span>
+                </div>
               </div>
 
-              <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-3">
-                <h2 className="text-lg font-bold text-amber-300">
-                  Récompenses gratuites réclamées ({rewardClaims.length})
-                </h2>
-                {rewardClaims.length === 0 ? (
-                  <p className="text-sm text-slate-400">Aucun cadeau réclamé pour l&apos;instant.</p>
-                ) : (
-                  <div className="space-y-2 max-h-64 overflow-auto">
-                    {rewardClaims.slice(0, 15).map((c) => (
-                      <div
-                        key={c.id}
-                        className="bg-[#060B17] border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm flex items-center justify-between gap-2"
+              <div className="bg-[#060B17] border border-slate-800 rounded-xl p-4 overflow-x-auto">
+                <svg
+                  viewBox={`0 0 ${chartData.width} ${chartData.height}`}
+                  className="w-full min-w-[420px] h-48"
+                >
+                  {[0, 0.5, 1].map((ratio) => {
+                    const y = chartData.padTop + chartData.plotH * (1 - ratio);
+                    return (
+                      <g key={ratio}>
+                        <line
+                          x1={28}
+                          y1={y}
+                          x2={chartData.width - 20}
+                          y2={y}
+                          stroke="#1e293b"
+                          strokeDasharray="3 3"
+                        />
+                        <text x={2} y={y + 4} fill="#64748b" fontSize="9">
+                          {(chartData.maxRevenue * ratio).toFixed(0)}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  <path
+                    d={chartData.revenueLine}
+                    fill="none"
+                    stroke="#fbbf24"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d={chartData.ordersLine}
+                    fill="none"
+                    stroke="#34d399"
+                    strokeWidth="2"
+                    strokeDasharray="4 3"
+                    strokeLinecap="round"
+                  />
+
+                  {chartData.revenuePoints.map((pt) => (
+                    <g key={pt.key}>
+                      <circle cx={pt.x} cy={pt.y} r="4" fill="#fbbf24" />
+                      <text
+                        x={pt.x}
+                        y={chartData.height - 8}
+                        textAnchor="middle"
+                        fill="#94a3b8"
+                        fontSize="10"
                       >
-                        <span className="text-emerald-400 font-bold">{c.prize}</span>
-                        <span className="text-slate-400">{c.contact}</span>
+                        {pt.label}
+                      </text>
+                    </g>
+                  ))}
+
+                  {chartData.ordersPoints.map((pt) => (
+                    <circle key={`ord-${pt.key}`} cx={pt.x} cy={pt.y} r="3.5" fill="#34d399" />
+                  ))}
+                </svg>
+              </div>
+            </div>
+
+            <div className="grid lg:grid-cols-2 gap-6">
+              <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-4">
+                <div className="flex items-center gap-2 text-amber-300 font-bold text-lg">
+                  <TrendingUp className="w-5 h-5" /> Offres les plus achetées
+                </div>
+
+                {stats.topPacks.length === 0 ? (
+                  <p className="text-sm text-slate-400">Aucune commande enregistrée pour l&apos;instant.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {stats.topPacks.map((p, idx) => (
+                      <div
+                        key={`${p.game}-${p.title}`}
+                        className="bg-[#060B17] border border-slate-800 rounded-xl p-3.5 flex items-center justify-between gap-3"
+                      >
+                        <div>
+                          <div className="text-xs text-amber-300 font-bold">
+                            #{idx + 1} • {p.game}
+                          </div>
+                          <div className="font-bold text-white text-sm sm:text-base">{p.title}</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="font-black text-amber-300 text-sm sm:text-base">{p.count} achat(s)</div>
+                          <div className="text-xs text-emerald-400">{p.totalTND.toFixed(2)} TND</div>
+                        </div>
                       </div>
                     ))}
                   </div>
                 )}
+              </div>
+
+              <div className="space-y-6">
+                <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-3">
+                  <h2 className="text-lg font-bold text-amber-300">Modes de paiement utilisés</h2>
+                  {Object.keys(stats.paymentCounts).length === 0 ? (
+                    <p className="text-sm text-slate-400">Aucune donnée disponible.</p>
+                  ) : (
+                    Object.entries(stats.paymentCounts).map(([method, count]) => (
+                      <div
+                        key={method}
+                        className="bg-[#060B17] border border-slate-800 rounded-xl px-4 py-3 flex items-center justify-between text-sm"
+                      >
+                        <span className="font-bold text-white">{method}</span>
+                        <span className="font-extrabold text-amber-300">{count} commande(s)</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-3">
+                  <h2 className="text-lg font-bold text-amber-300">
+                    Récompenses gratuites réclamées ({rewardClaims.length})
+                  </h2>
+                  {rewardClaims.length === 0 ? (
+                    <p className="text-sm text-slate-400">Aucun cadeau réclamé pour l&apos;instant.</p>
+                  ) : (
+                    <div className="space-y-2 max-h-64 overflow-auto">
+                      {rewardClaims.slice(0, 15).map((c) => (
+                        <div
+                          key={c.id}
+                          className="bg-[#060B17] border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm flex items-center justify-between gap-2"
+                        >
+                          <span className="text-emerald-400 font-bold">{c.prize}</span>
+                          <span className="text-slate-400">{c.contact}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -1081,7 +1301,17 @@ export default function AdminDashboard() {
                             : " • Usage unique (disponible)")}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
+                      {pr.used && (
+                        <button
+                          type="button"
+                          onClick={() => handleResetPromoUsage(pr)}
+                          className="text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1"
+                          title="Réinitialiser l'usage"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" /> Reset
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => handleTogglePromo(pr)}
@@ -1187,6 +1417,26 @@ export default function AdminDashboard() {
                 type="text"
                 value={deliveryTime}
                 onChange={(e) => setDeliveryTime(e.target.value)}
+                className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            <label className="flex items-center gap-2 text-sm text-slate-200 cursor-pointer pt-1">
+              <input
+                type="checkbox"
+                checked={shopPaused}
+                onChange={(e) => setShopPaused(e.target.checked)}
+                className="rounded border-slate-700"
+              />
+              Afficher un bandeau d&apos;alerte / livraison ralentie sur la boutique
+            </label>
+
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Message d&apos;alerte boutique</label>
+              <input
+                type="text"
+                value={pauseMessage}
+                onChange={(e) => setPauseMessage(e.target.value)}
                 className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-amber-400"
               />
             </div>
