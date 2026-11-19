@@ -3,7 +3,17 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { auth, db } from "@/lib/firebase";
 import { signInWithEmailAndPassword, onAuthStateChanged, signOut, User } from "firebase/auth";
-import { collection, query, orderBy, onSnapshot, doc, updateDoc, deleteDoc } from "firebase/firestore";
+import {
+  collection,
+  query,
+  orderBy,
+  onSnapshot,
+  doc,
+  updateDoc,
+  deleteDoc,
+  addDoc,
+  setDoc,
+} from "firebase/firestore";
 import {
   Check,
   X,
@@ -18,6 +28,11 @@ import {
   Wallet,
   Clock,
   CheckCircle2,
+  Package,
+  Settings,
+  ShoppingBag,
+  Plus,
+  Save,
 } from "lucide-react";
 
 interface Order {
@@ -35,6 +50,33 @@ interface Order {
   receiptUrl: string;
   status: string;
 }
+
+interface PackDoc {
+  id: string;
+  game: string;
+  title: string;
+  price: number;
+  badge?: string;
+  active?: boolean;
+}
+
+interface PaymentSettings {
+  d17Phone: string;
+  flouciPhone: string;
+  rechargeNote: string;
+  deliveryTime: string;
+  whatsappSupport: string;
+}
+
+const SEED_PACKS = [
+  { game: "Free Fire", title: "100 + 10 Diamants", price: 4.5, badge: "Populaire", active: true },
+  { game: "Free Fire", title: "310 + 31 Diamants", price: 13.0, badge: "", active: true },
+  { game: "Free Fire", title: "520 + 52 Diamants", price: 21.5, badge: "Meilleur choix", active: true },
+  { game: "eFootball", title: "1040 Coins", price: 34.0, badge: "Populaire", active: true },
+  { game: "eFootball", title: "2130 Coins", price: 65.0, badge: "", active: true },
+  { game: "Netflix", title: "1 Mois UHD (Profil Privé)", price: 14.0, badge: "Top vente", active: true },
+  { game: "Netflix", title: "3 Mois UHD (Profil Privé)", price: 39.0, badge: "", active: true },
+];
 
 const buildWhatsAppUrl = (rawPhone: string, order: Order) => {
   const digitsOnly = rawPhone.replace(/\D/g, "");
@@ -56,13 +98,29 @@ export default function AdminDashboard() {
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [activeTab, setActiveTab] = useState<"orders" | "packs" | "settings">("orders");
+
   const [orders, setOrders] = useState<Order[]>([]);
   const [previewOrder, setPreviewOrder] = useState<Order | null>(null);
-
   const [searchTerm, setSearchTerm] = useState("");
   const [gameFilter, setGameFilter] = useState<string>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const [packs, setPacks] = useState<PackDoc[]>([]);
+  const [newGame, setNewGame] = useState("Free Fire");
+  const [newTitle, setNewTitle] = useState("");
+  const [newPrice, setNewPrice] = useState("");
+  const [newBadge, setNewBadge] = useState("");
+  const [addingPack, setAddingPack] = useState(false);
+
+  const [d17Phone, setD17Phone] = useState("");
+  const [flouciPhone, setFlouciPhone] = useState("");
+  const [rechargeNote, setRechargeNote] = useState(
+    "Envoyez une photo claire du ticket de recharge (TT / Ooredoo / Orange) correspondant au montant exact."
+  );
+  const [deliveryTime, setDeliveryTime] = useState("Livraison 5-15 min");
+  const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (currentUser) => setUser(currentUser));
@@ -71,12 +129,33 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
-    const unsub = onSnapshot(q, (snapshot) => {
+    const qOrders = query(collection(db, "orders"), orderBy("createdAt", "desc"));
+    const unsubOrders = onSnapshot(qOrders, (snapshot) => {
       const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Order));
       setOrders(list);
     });
-    return () => unsub();
+
+    const qPacks = query(collection(db, "packs"), orderBy("price", "asc"));
+    const unsubPacks = onSnapshot(qPacks, (snapshot) => {
+      const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as PackDoc));
+      setPacks(list);
+    });
+
+    const unsubSettings = onSnapshot(doc(db, "settings", "payment"), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() as Partial<PaymentSettings>;
+        if (data.d17Phone !== undefined) setD17Phone(data.d17Phone);
+        if (data.flouciPhone !== undefined) setFlouciPhone(data.flouciPhone);
+        if (data.rechargeNote !== undefined) setRechargeNote(data.rechargeNote);
+        if (data.deliveryTime !== undefined) setDeliveryTime(data.deliveryTime);
+      }
+    });
+
+    return () => {
+      unsubOrders();
+      unsubPacks();
+      unsubSettings();
+    };
   }, [user]);
 
   const handleCopy = (value: string, key: string) => {
@@ -98,10 +177,75 @@ export default function AdminDashboard() {
     await updateDoc(doc(db, "orders", orderId), { status: newStatus });
   };
 
-  const handleDelete = async (orderId: string, orderNumber: string) => {
-    const confirmed = window.confirm(`Supprimer définitivement la commande ${orderNumber} ?`);
-    if (!confirmed) return;
+  const handleDeleteOrder = async (orderId: string, orderNumber: string) => {
+    if (!window.confirm(`Supprimer définitivement la commande ${orderNumber} ?`)) return;
     await deleteDoc(doc(db, "orders", orderId));
+  };
+
+  const handleAddPack = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const numericPrice = parseFloat(newPrice.replace(",", "."));
+    if (!newTitle.trim() || isNaN(numericPrice) || numericPrice <= 0) {
+      alert("Renseignez un titre et un prix valide en TND.");
+      return;
+    }
+    setAddingPack(true);
+    try {
+      await addDoc(collection(db, "packs"), {
+        game: newGame.trim(),
+        title: newTitle.trim(),
+        price: numericPrice,
+        badge: newBadge.trim(),
+        active: true,
+      });
+      setNewTitle("");
+      setNewPrice("");
+      setNewBadge("");
+    } finally {
+      setAddingPack(false);
+    }
+  };
+
+  const handleSeedDefaultPacks = async () => {
+    for (const p of SEED_PACKS) {
+      await addDoc(collection(db, "packs"), p);
+    }
+    alert("Packs par défaut ajoutés !");
+  };
+
+  const handleUpdatePackPrice = async (packId: string, priceStr: string) => {
+    const val = parseFloat(priceStr.replace(",", "."));
+    if (isNaN(val) || val <= 0) return;
+    await updateDoc(doc(db, "packs", packId), { price: val });
+  };
+
+  const handleTogglePackActive = async (pack: PackDoc) => {
+    await updateDoc(doc(db, "packs", pack.id), { active: pack.active === false ? true : false });
+  };
+
+  const handleDeletePack = async (packId: string) => {
+    if (!window.confirm("Supprimer ce pack ?")) return;
+    await deleteDoc(doc(db, "packs", packId));
+  };
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingSettings(true);
+    try {
+      await setDoc(
+        doc(db, "settings", "payment"),
+        {
+          d17Phone: d17Phone.trim(),
+          flouciPhone: flouciPhone.trim(),
+          rechargeNote: rechargeNote.trim(),
+          deliveryTime: deliveryTime.trim(),
+        },
+        { merge: true }
+      );
+      alert("Paramètres enregistrés en temps réel !");
+    } finally {
+      setSavingSettings(false);
+    }
   };
 
   const stats = useMemo(() => {
@@ -174,8 +318,7 @@ export default function AdminDashboard() {
   return (
     <div className="min-h-screen bg-[#060B17] text-white p-4 sm:p-8">
       <div className="max-w-6xl mx-auto">
-        {/* En-tête */}
-        <div className="flex items-center justify-between mb-6 border-b border-amber-500/20 pb-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 border-b border-amber-500/20 pb-4">
           <div className="flex items-center gap-3">
             <img
               src="/logo.jpg"
@@ -184,236 +327,442 @@ export default function AdminDashboard() {
             />
             <div>
               <h1 className="text-xl sm:text-2xl font-extrabold text-amber-300">Tableau de bord — GEN SHOP</h1>
-              <p className="text-xs text-slate-400">Gestion des commandes, reçus et codes OTP en direct</p>
+              <p className="text-xs text-slate-400">Pilotage dynamique : commandes, prix, numéros &amp; OTP</p>
             </div>
           </div>
+
           <button
             onClick={() => signOut(auth)}
-            className="flex items-center gap-2 text-sm text-slate-400 hover:text-amber-300 transition"
+            className="flex items-center gap-2 text-sm text-slate-400 hover:text-amber-300 transition self-start sm:self-auto"
           >
             <LogOut className="w-4 h-4" /> Déconnexion
           </button>
         </div>
 
-        {/* Cartes statistiques */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
-          <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-4">
-            <div className="text-xs text-slate-400 mb-1">Total commandes</div>
-            <div className="text-2xl font-black text-white">{stats.total}</div>
-          </div>
-          <div className="bg-[#0D162B] border border-amber-500/25 rounded-2xl p-4">
-            <div className="text-xs text-amber-300 flex items-center gap-1 mb-1">
-              <Clock className="w-3.5 h-3.5" /> En cours / OTP
-            </div>
-            <div className="text-2xl font-black text-amber-300">{stats.pendingCount}</div>
-          </div>
-          <div className="bg-[#0D162B] border border-emerald-500/25 rounded-2xl p-4">
-            <div className="text-xs text-emerald-400 flex items-center gap-1 mb-1">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Livrées
-            </div>
-            <div className="text-2xl font-black text-emerald-400">{stats.deliveredCount}</div>
-          </div>
-          <div className="bg-[#0D162B] border border-amber-500/25 rounded-2xl p-4">
-            <div className="text-xs text-slate-400 flex items-center gap-1 mb-1">
-              <Wallet className="w-3.5 h-3.5 text-amber-400" /> Total livré
-            </div>
-            <div className="text-2xl font-black text-amber-300">{stats.revenueTND.toFixed(2)} TND</div>
-          </div>
+        <div className="flex gap-2 mb-6 flex-wrap">
+          <button
+            onClick={() => setActiveTab("orders")}
+            className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 border transition ${
+              activeTab === "orders"
+                ? "bg-amber-400 text-slate-950 border-amber-300"
+                : "bg-[#0D162B] text-slate-300 border-slate-800 hover:border-amber-500/30"
+            }`}
+          >
+            <ShoppingBag className="w-4 h-4" /> Commandes ({orders.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("packs")}
+            className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 border transition ${
+              activeTab === "packs"
+                ? "bg-amber-400 text-slate-950 border-amber-300"
+                : "bg-[#0D162B] text-slate-300 border-slate-800 hover:border-amber-500/30"
+            }`}
+          >
+            <Package className="w-4 h-4" /> Packs &amp; Prix ({packs.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("settings")}
+            className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 border transition ${
+              activeTab === "settings"
+                ? "bg-amber-400 text-slate-950 border-amber-300"
+                : "bg-[#0D162B] text-slate-300 border-slate-800 hover:border-amber-500/30"
+            }`}
+          >
+            <Settings className="w-4 h-4" /> Paiement &amp; Infos
+          </button>
         </div>
 
-        {/* Barre de recherche et filtres */}
-        <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-4 mb-6 flex flex-col md:flex-row gap-3">
-          <div className="flex-1 flex items-center gap-2 bg-[#060B17] border border-slate-700 rounded-xl px-3">
-            <Search className="w-4 h-4 text-amber-400" />
-            <input
-              type="text"
-              placeholder="Rechercher GEN-XXXX, WhatsApp, ID ou e-mail..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-transparent py-2 text-sm text-white focus:outline-none"
-            />
-          </div>
-
-          <select
-            value={gameFilter}
-            onChange={(e) => setGameFilter(e.target.value)}
-            className="bg-[#060B17] border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
-          >
-            <option value="ALL">Tous les jeux</option>
-            <option value="Free Fire">Free Fire</option>
-            <option value="eFootball">eFootball</option>
-            <option value="Netflix">Netflix</option>
-          </select>
-
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="bg-[#060B17] border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
-          >
-            <option value="ALL">Tous les statuts</option>
-            <option value="en_attente">en_attente</option>
-            <option value="en_attente_connexion">en_attente_connexion</option>
-            <option value="attente_code_client">attente_code_client</option>
-            <option value="code_recu">code_recu</option>
-            <option value="livree">livree</option>
-            <option value="rejetee">rejetee</option>
-          </select>
-        </div>
-
-        {/* Liste des commandes */}
-        <div className="space-y-4">
-          {filteredOrders.length === 0 ? (
-            <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-8 text-center text-slate-400">
-              Aucune commande trouvée avec ces filtres.
+        {activeTab === "orders" && (
+          <>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
+              <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-4">
+                <div className="text-xs text-slate-400 mb-1">Total commandes</div>
+                <div className="text-2xl font-black text-white">{stats.total}</div>
+              </div>
+              <div className="bg-[#0D162B] border border-amber-500/25 rounded-2xl p-4">
+                <div className="text-xs text-amber-300 flex items-center gap-1 mb-1">
+                  <Clock className="w-3.5 h-3.5" /> En cours / OTP
+                </div>
+                <div className="text-2xl font-black text-amber-300">{stats.pendingCount}</div>
+              </div>
+              <div className="bg-[#0D162B] border border-emerald-500/25 rounded-2xl p-4">
+                <div className="text-xs text-emerald-400 flex items-center gap-1 mb-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Livrées
+                </div>
+                <div className="text-2xl font-black text-emerald-400">{stats.deliveredCount}</div>
+              </div>
+              <div className="bg-[#0D162B] border border-amber-500/25 rounded-2xl p-4">
+                <div className="text-xs text-slate-400 flex items-center gap-1 mb-1">
+                  <Wallet className="w-3.5 h-3.5 text-amber-400" /> Total livré
+                </div>
+                <div className="text-2xl font-black text-amber-300">{stats.revenueTND.toFixed(2)} TND</div>
+              </div>
             </div>
-          ) : (
-            filteredOrders.map((order) => (
-              <div
-                key={order.id}
-                className="bg-[#0D162B] border border-slate-800 hover:border-amber-500/25 rounded-2xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 transition"
+
+            <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-4 mb-6 flex flex-col md:flex-row gap-3">
+              <div className="flex-1 flex items-center gap-2 bg-[#060B17] border border-slate-700 rounded-xl px-3">
+                <Search className="w-4 h-4 text-amber-400" />
+                <input
+                  type="text"
+                  placeholder="Rechercher GEN-XXXX, WhatsApp, ID ou e-mail..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full bg-transparent py-2 text-sm text-white focus:outline-none"
+                />
+              </div>
+
+              <select
+                value={gameFilter}
+                onChange={(e) => setGameFilter(e.target.value)}
+                className="bg-[#060B17] border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
               >
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-mono font-bold text-amber-300">{order.orderNumber}</span>
-                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-200">{order.game}</span>
-                    <span
-                      className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${
-                        order.status === "livree"
-                          ? "bg-emerald-500/20 text-emerald-400"
-                          : order.status === "rejetee"
-                          ? "bg-red-500/20 text-red-400"
-                          : "bg-amber-500/20 text-amber-300"
-                      }`}
-                    >
-                      {order.status}
-                    </span>
-                  </div>
+                <option value="ALL">Toutes les catégories</option>
+                <option value="Free Fire">Free Fire</option>
+                <option value="eFootball">eFootball</option>
+                <option value="Netflix">Netflix</option>
+              </select>
 
-                  <div className="font-bold text-lg text-white">
-                    {order.packTitle} — <span className="text-amber-300">{Number(order.priceTND).toFixed(2)} TND</span>{" "}
-                    <span className="text-sm font-semibold text-slate-400">({order.paymentMethod})</span>
-                  </div>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="bg-[#060B17] border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
+              >
+                <option value="ALL">Tous les statuts</option>
+                <option value="en_attente">en_attente</option>
+                <option value="en_attente_connexion">en_attente_connexion</option>
+                <option value="attente_code_client">attente_code_client</option>
+                <option value="code_recu">code_recu</option>
+                <option value="livree">livree</option>
+                <option value="rejetee">rejetee</option>
+              </select>
+            </div>
 
-                  {order.game === "Free Fire" ? (
-                    <div className="text-sm text-slate-300 flex items-center gap-2 flex-wrap">
-                      <span>
-                        ID : <strong className="text-white">{order.playerId}</strong>
-                      </span>
-                      {order.playerId && (
-                        <button
-                          onClick={() => handleCopy(order.playerId!, `id-${order.id}`)}
-                          className="text-xs bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded flex items-center gap-1"
+            <div className="space-y-4">
+              {filteredOrders.length === 0 ? (
+                <div className="bg-[#0D162B] border border-slate-800 rounded-2xl p-8 text-center text-slate-400">
+                  Aucune commande trouvée.
+                </div>
+              ) : (
+                filteredOrders.map((order) => (
+                  <div
+                    key={order.id}
+                    className="bg-[#0D162B] border border-slate-800 hover:border-amber-500/25 rounded-2xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 transition"
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono font-bold text-amber-300">{order.orderNumber}</span>
+                        <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-200">{order.game}</span>
+                        <span
+                          className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${
+                            order.status === "livree"
+                              ? "bg-emerald-500/20 text-emerald-400"
+                              : order.status === "rejetee"
+                              ? "bg-red-500/20 text-red-400"
+                              : "bg-amber-500/20 text-amber-300"
+                          }`}
                         >
-                          <Copy className="w-3 h-3" /> {copiedKey === `id-${order.id}` ? "Copié !" : "Copier ID"}
+                          {order.status}
+                        </span>
+                      </div>
+
+                      <div className="font-bold text-lg text-white">
+                        {order.packTitle} — <span className="text-amber-300">{Number(order.priceTND).toFixed(2)} TND</span>{" "}
+                        <span className="text-sm font-semibold text-slate-400">({order.paymentMethod})</span>
+                      </div>
+
+                      {order.game === "Free Fire" ? (
+                        <div className="text-sm text-slate-300 flex items-center gap-2 flex-wrap">
+                          <span>
+                            ID : <strong className="text-white">{order.playerId}</strong>
+                          </span>
+                          {order.playerId && (
+                            <button
+                              onClick={() => handleCopy(order.playerId!, `id-${order.id}`)}
+                              className="text-xs bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded flex items-center gap-1"
+                            >
+                              <Copy className="w-3 h-3" /> {copiedKey === `id-${order.id}` ? "Copié !" : "Copier ID"}
+                            </button>
+                          )}
+                          <span className="text-slate-400">• WhatsApp : {order.whatsapp}</span>
+                        </div>
+                      ) : (
+                        <div className="bg-[#060B17] border border-slate-800 rounded-xl p-3 text-sm space-y-1.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-slate-400">Compte :</span>
+                            <strong className="text-white">{order.accountEmail}</strong>
+                            {order.accountEmail && (
+                              <button
+                                onClick={() => handleCopy(order.accountEmail!, `mail-${order.id}`)}
+                                className="text-xs bg-slate-800 hover:bg-slate-700 px-2 py-0.5 rounded flex items-center gap-1"
+                              >
+                                <Copy className="w-3 h-3" /> {copiedKey === `mail-${order.id}` ? "Copié !" : "Copier"}
+                              </button>
+                            )}
+                          </div>
+                          {order.accountPassword && (
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-slate-400">Mot de passe :</span>
+                              <strong className="font-mono text-amber-300">{order.accountPassword}</strong>
+                              <button
+                                onClick={() => handleCopy(order.accountPassword!, `pass-${order.id}`)}
+                                className="text-xs bg-slate-800 hover:bg-slate-700 px-2 py-0.5 rounded flex items-center gap-1"
+                              >
+                                <Copy className="w-3 h-3" /> {copiedKey === `pass-${order.id}` ? "Copié !" : "Copier"}
+                              </button>
+                            </div>
+                          )}
+                          {order.game === "eFootball" && (
+                            <div className="flex items-center gap-2 flex-wrap pt-1">
+                              <KeyRound className="w-4 h-4 text-amber-400" />
+                              <span className="text-slate-400">Code vérif client :</span>
+                              {order.verificationCode ? (
+                                <strong className="font-mono text-base text-emerald-400 bg-emerald-500/15 px-2.5 py-0.5 rounded">
+                                  {order.verificationCode}
+                                </strong>
+                              ) : (
+                                <span className="text-xs text-slate-500 italic">Pas encore envoyé</span>
+                              )}
+                            </div>
+                          )}
+                          <div className="text-xs text-slate-400 pt-0.5">WhatsApp : {order.whatsapp}</div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {order.game === "eFootball" && order.status !== "livree" && (
+                        <button
+                          onClick={() => updateStatus(order.id, "attente_code_client")}
+                          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-2 rounded-xl text-xs sm:text-sm transition"
+                        >
+                          Demander code
                         </button>
                       )}
-                      <span className="text-slate-400">• WhatsApp : {order.whatsapp}</span>
-                    </div>
-                  ) : (
-                    <div className="bg-[#060B17] border border-slate-800 rounded-xl p-3 text-sm space-y-1.5">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-slate-400">Compte :</span>
-                        <strong className="text-white">{order.accountEmail}</strong>
-                        {order.accountEmail && (
-                          <button
-                            onClick={() => handleCopy(order.accountEmail!, `mail-${order.id}`)}
-                            className="text-xs bg-slate-800 hover:bg-slate-700 px-2 py-0.5 rounded flex items-center gap-1"
-                          >
-                            <Copy className="w-3 h-3" /> {copiedKey === `mail-${order.id}` ? "Copié !" : "Copier"}
-                          </button>
-                        )}
-                      </div>
-                      {order.accountPassword && (
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-slate-400">Mot de passe :</span>
-                          <strong className="font-mono text-amber-300">{order.accountPassword}</strong>
-                          <button
-                            onClick={() => handleCopy(order.accountPassword!, `pass-${order.id}`)}
-                            className="text-xs bg-slate-800 hover:bg-slate-700 px-2 py-0.5 rounded flex items-center gap-1"
-                          >
-                            <Copy className="w-3 h-3" /> {copiedKey === `pass-${order.id}` ? "Copié !" : "Copier"}
-                          </button>
-                        </div>
-                      )}
-                      {order.game === "eFootball" && (
-                        <div className="flex items-center gap-2 flex-wrap pt-1">
-                          <KeyRound className="w-4 h-4 text-amber-400" />
-                          <span className="text-slate-400">Code vérif client :</span>
-                          {order.verificationCode ? (
-                            <strong className="font-mono text-base text-emerald-400 bg-emerald-500/15 px-2.5 py-0.5 rounded">
-                              {order.verificationCode}
-                            </strong>
-                          ) : (
-                            <span className="text-xs text-slate-500 italic">Pas encore envoyé</span>
-                          )}
-                        </div>
-                      )}
-                      <div className="text-xs text-slate-400 pt-0.5">WhatsApp : {order.whatsapp}</div>
-                    </div>
-                  )}
-                </div>
 
-                {/* Boutons d'action */}
-                <div className="flex items-center gap-2 flex-wrap">
-                  {order.game === "eFootball" && order.status !== "livree" && (
-                    <button
-                      onClick={() => updateStatus(order.id, "attente_code_client")}
-                      className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-2 rounded-xl text-xs sm:text-sm transition"
-                    >
-                      Demander code
-                    </button>
-                  )}
+                      <a
+                        href={buildWhatsAppUrl(order.whatsapp, order)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="bg-emerald-700/80 hover:bg-emerald-600 text-white px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-1.5 transition"
+                      >
+                        <MessageCircle className="w-4 h-4" /> WhatsApp
+                      </a>
 
-                  <a
-                    href={buildWhatsAppUrl(order.whatsapp, order)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="bg-emerald-700/80 hover:bg-emerald-600 text-white px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-1.5 transition"
+                      {order.receiptUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setPreviewOrder(order)}
+                          className="bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/35 text-amber-300 px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-1.5 transition"
+                        >
+                          <Eye className="w-4 h-4" /> Aperçu reçu
+                        </button>
+                      )}
+
+                      <button
+                        onClick={() => updateStatus(order.id, "livree")}
+                        className="bg-emerald-600 hover:bg-emerald-500 p-2.5 rounded-xl transition"
+                        title="Marquer comme livrée"
+                      >
+                        <Check className="w-5 h-5" />
+                      </button>
+
+                      <button
+                        onClick={() => updateStatus(order.id, "rejetee")}
+                        className="bg-red-600 hover:bg-red-500 p-2.5 rounded-xl transition"
+                        title="Rejeter"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+
+                      <button
+                        onClick={() => handleDeleteOrder(order.id, order.orderNumber)}
+                        className="bg-slate-800 hover:bg-red-900/70 text-slate-300 hover:text-red-300 p-2.5 rounded-xl transition"
+                        title="Supprimer la commande"
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        )}
+
+        {activeTab === "packs" && (
+          <div className="space-y-6">
+            <form onSubmit={handleAddPack} className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <h2 className="text-lg font-bold text-amber-300">Ajouter un pack dynamique</h2>
+                {packs.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={handleSeedDefaultPacks}
+                    className="text-xs bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-400/30 px-3 py-1.5 rounded-lg font-bold"
                   >
-                    <MessageCircle className="w-4 h-4" /> WhatsApp
-                  </a>
+                    Initialiser les packs par défaut
+                  </button>
+                )}
+              </div>
 
-                  {order.receiptUrl && (
+              <div className="grid sm:grid-cols-4 gap-3">
+                <input
+                  type="text"
+                  placeholder="Catégorie (ex: Free Fire)"
+                  value={newGame}
+                  onChange={(e) => setNewGame(e.target.value)}
+                  className="bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400"
+                  required
+                />
+                <input
+                  type="text"
+                  placeholder="Titre (ex: 520 + 52 Diamants)"
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  className="bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400"
+                  required
+                />
+                <input
+                  type="number"
+                  step="0.01"
+                  placeholder="Prix TND (ex: 21.5)"
+                  value={newPrice}
+                  onChange={(e) => setNewPrice(e.target.value)}
+                  className="bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400"
+                  required
+                />
+                <input
+                  type="text"
+                  placeholder="Badge optionnel (ex: Populaire)"
+                  value={newBadge}
+                  onChange={(e) => setNewBadge(e.target.value)}
+                  className="bg-[#060B17] border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={addingPack}
+                className="bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black px-5 py-2.5 rounded-xl text-sm flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" /> {addingPack ? "Ajout..." : "Ajouter le pack"}
+              </button>
+            </form>
+
+            <div className="space-y-3">
+              {packs.map((pack) => (
+                <div
+                  key={pack.id}
+                  className="bg-[#0D162B] border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-slate-800 text-amber-300">
+                        {pack.game}
+                      </span>
+                      {pack.badge && (
+                        <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">
+                          {pack.badge}
+                        </span>
+                      )}
+                      {pack.active === false && (
+                        <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-red-500/20 text-red-400">
+                          Masqué
+                        </span>
+                      )}
+                    </div>
+                    <div className="font-bold text-base text-white mt-1">{pack.title}</div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <input
+                      type="number"
+                      step="0.01"
+                      defaultValue={pack.price}
+                      onBlur={(e) => handleUpdatePackPrice(pack.id, e.target.value)}
+                      className="w-28 bg-[#060B17] border border-slate-700 rounded-xl px-3 py-2 text-sm font-bold text-amber-300 focus:outline-none focus:border-amber-400"
+                      title="Modifier le prix puis cliquer ailleurs"
+                    />
+                    <span className="text-xs text-slate-400">TND</span>
+
                     <button
                       type="button"
-                      onClick={() => setPreviewOrder(order)}
-                      className="bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/35 text-amber-300 px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-1.5 transition"
+                      onClick={() => handleTogglePackActive(pack)}
+                      className="bg-slate-800 hover:bg-slate-700 text-xs font-bold px-3 py-2 rounded-xl"
                     >
-                      <Eye className="w-4 h-4" /> Aperçu reçu
+                      {pack.active === false ? "Activer" : "Masquer"}
                     </button>
-                  )}
 
-                  <button
-                    onClick={() => updateStatus(order.id, "livree")}
-                    className="bg-emerald-600 hover:bg-emerald-500 p-2.5 rounded-xl transition"
-                    title="Marquer comme livrée"
-                  >
-                    <Check className="w-5 h-5" />
-                  </button>
-
-                  <button
-                    onClick={() => updateStatus(order.id, "rejetee")}
-                    className="bg-red-600 hover:bg-red-500 p-2.5 rounded-xl transition"
-                    title="Rejeter"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-
-                  <button
-                    onClick={() => handleDelete(order.id, order.orderNumber)}
-                    className="bg-slate-800 hover:bg-red-900/70 text-slate-300 hover:text-red-300 p-2.5 rounded-xl transition"
-                    title="Supprimer la commande"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeletePack(pack.id)}
+                      className="bg-slate-800 hover:bg-red-900/70 text-red-300 p-2 rounded-xl"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === "settings" && (
+          <form onSubmit={handleSaveSettings} className="bg-[#0D162B] border border-slate-800 rounded-2xl p-6 space-y-4 max-w-2xl">
+            <h2 className="text-lg font-bold text-amber-300">Paramètres dynamiques de la boutique</h2>
+
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-slate-400 mb-1.5">Numéro D17</label>
+                <input
+                  type="text"
+                  value={d17Phone}
+                  onChange={(e) => setD17Phone(e.target.value)}
+                  className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-amber-400"
+                />
               </div>
-            ))
-          )}
-        </div>
+              <div>
+                <label className="block text-sm text-slate-400 mb-1.5">Numéro / ID Flouci</label>
+                <input
+                  type="text"
+                  value={flouciPhone}
+                  onChange={(e) => setFlouciPhone(e.target.value)}
+                  className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-amber-400"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Badge délai affiché en haut</label>
+              <input
+                type="text"
+                value={deliveryTime}
+                onChange={(e) => setDeliveryTime(e.target.value)}
+                className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm text-slate-400 mb-1.5">Consigne de paiement par recharge</label>
+              <textarea
+                rows={3}
+                value={rechargeNote}
+                onChange={(e) => setRechargeNote(e.target.value)}
+                className="w-full bg-[#060B17] border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={savingSettings}
+              className="bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black px-6 py-3 rounded-xl text-sm flex items-center gap-2"
+            >
+              <Save className="w-4 h-4" /> {savingSettings ? "Enregistrement..." : "Enregistrer les paramètres"}
+            </button>
+          </form>
+        )}
       </div>
 
-      {/* Modal de consultation du reçu */}
       {previewOrder && (
         <div
           onClick={() => setPreviewOrder(null)}
@@ -456,7 +805,7 @@ export default function AdminDashboard() {
                 rel="noreferrer"
                 className="text-xs sm:text-sm text-amber-300 hover:underline flex items-center gap-1"
               >
-                <ExternalLink className="w-4 h-4" /> Ouvrir l&apos;image dans un nouvel onglet
+                <ExternalLink className="w-4 h-4" /> Ouvrir dans un nouvel onglet
               </a>
 
               <div className="flex items-center gap-2">
